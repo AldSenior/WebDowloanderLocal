@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+@theme {
+  --color-graphite-900: #171717;
+  --color-graphite-800: #232323;
+  --color-graphite-700: #2d2d2d;
+
+  --color-neon-cyan: #0EA5E9;
+  --color-neon-green: #22c55e;
+
+  --font-sans: 'Inter', 'sans-serif';
+  --font-mono: 'Fira Code', 'monospace';
+}
+
+/* Theme Variatons */
+[data-theme='ocean'],
+.theme-ocean {
+  --color-graphite-900: #0f172a;
+  --color-graphite-800: #1e293b;
+  --color-graphite-700: #334155;
+  --color-neon-cyan: #38bdf8;
+}
+
+[data-theme='matrix'],
+.theme-matrix {
+  --color-graphite-900: #050505;
+  --color-graphite-800: #0a0a0a;
+  --color-graphite-700: #1a1a1a;
+  --color-neon-cyan: #10b981;
+  --color-neon-green: #34d399;
+}
+
+@layer base {
+  body {
+    @apply bg-graphite-900 text-gray-200 overflow-hidden font-sans transition-colors duration-500;
+  }
+}
+
+/* Premium Animations */
+@keyframes toast-in {
+  0% {
+    transform: translateX(100%) translateY(20px) scale(0.9);
+    opacity: 0;
+    filter: blur(10px);
+  }
+
+  60% {
+    transform: translateX(-10px) translateY(0) scale(1.02);
+    opacity: 1;
+    filter: blur(0);
+  }
+
+  100% {
+    transform: translateX(0) translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes toast-progress {
+  from {
+    width: 100%;
+  }
+
+  to {
+    width: 0%;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-in {
+  0% {
+    transform: scale(0.9) translateY(30px);
+    opacity: 0;
+    filter: blur(10px);
+  }
+
+  100% {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.animate-toast-in {
+  animation: toast-in 0.6s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+.animate-toast-progress {
+  animation: toast-progress 5s linear forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}
+
+.animate-modal-in {
+  animation: modal-in 0.5s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+/* Custom Scrollbar */
+.scrollbar-custom::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.scrollbar-custom::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-custom::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.01);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.scrollbar-custom:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.scrollbar-custom::-webkit-scrollbar-thumb:hover {
+  background: var(--color-neon-cyan);
+  box-shadow: 0 0 15px var(--color-neon-cyan);
+}
+
+/* Smooth Transitions */
+* {
+  transition-property: background-color, border-color, color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 300ms;
+}

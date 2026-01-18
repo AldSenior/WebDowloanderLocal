@@ -19,15 +19,17 @@ import (
 )
 
 type Config struct {
-	Dir          string
-	OriginalHost string
-	OutputDir    string
-	RootDir      string
-	Verbose      bool
-	Debug        bool
+	Dir             string
+	OriginalHost    string
+	OutputDir       string
+	RootDir         string
+	Verbose         bool
+	Debug           bool
+	ScriptsToRemove []string
 }
 
 type Stats struct {
+	TotalFiles     int64
 	FilesProcessed int64
 	LinksRewritten int64
 	StartTime      time.Time
@@ -62,11 +64,32 @@ const (
 
 func (p *Processor) AnalyzeScripts(dir string) []string {
 	var scripts []string
+	seen := make(map[string]bool)
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
 			ext := strings.ToLower(filepath.Ext(path))
-			if ext == ".js" || ext == ".php" {
-				scripts = append(scripts, path)
+			if ext == ".html" || ext == ".php" || ext == ".htm" {
+				b, _ := ioutil.ReadFile(path)
+				doc, _ := html.Parse(bytes.NewReader(b))
+				var f func(*html.Node)
+				f = func(n *html.Node) {
+					if n.Type == html.ElementNode && n.Data == "script" {
+						src := ""
+						for _, a := range n.Attr {
+							if a.Key == "src" {
+								src = a.Val
+							}
+						}
+						if src != "" && !seen[src] {
+							scripts = append(scripts, src)
+							seen[src] = true
+						}
+					}
+					for c := n.FirstChild; c != nil; c = c.NextSibling {
+						f(c)
+					}
+				}
+				f(doc)
 			}
 		}
 		return nil
@@ -75,7 +98,7 @@ func (p *Processor) AnalyzeScripts(dir string) []string {
 }
 
 // ЭТОТ МЕТОД НУЖЕН GUI
-func (p *Processor) Process(sourceDir string) {
+func (p *Processor) Process(sourceDir string, scriptsToRemove []string) {
 	if p.Stats == nil {
 		p.Stats = &Stats{StartTime: time.Now()}
 	}
@@ -84,6 +107,9 @@ func (p *Processor) Process(sourceDir string) {
 		p.cfg.OutputDir = filepath.Clean(sourceDir) + "_processed"
 	}
 	p.cfg.Dir = sourceDir
+
+	// Сохраняем паттерны для удаления
+	p.cfg.ScriptsToRemove = scriptsToRemove
 
 	// Если хост пустой, попробуем извлечь из имени папки
 	if p.cfg.OriginalHost == "" {
@@ -95,6 +121,20 @@ func (p *Processor) Process(sourceDir string) {
 	}
 
 	p.log("[START] Обработка: %s -> %s\n", p.cfg.Dir, p.cfg.OutputDir)
+
+	// Pre-scan for progress
+	var total int64
+	filepath.WalkDir(sourceDir, func(_ string, d os.DirEntry, _ error) error {
+		if !d.IsDir() {
+			total++
+		}
+		return nil
+	})
+	p.Stats.TotalFiles = total
+
+	if len(scriptsToRemove) > 0 {
+		p.log("[INFO] Удаление скриптов: %d паттернов\n", len(scriptsToRemove))
+	}
 	p.walkAndProcess(sourceDir)
 	p.log("[DONE] Обработка завершена. Файлов: %d, Ссылок: %d\n", atomic.LoadInt64(&p.Stats.FilesProcessed), atomic.LoadInt64(&p.Stats.LinksRewritten))
 }
@@ -230,15 +270,25 @@ func (p *Processor) resolveTargetPath(currentFile, rawURL string) (string, bool)
 		finalPath = strings.TrimSuffix(finalPath, "/index.html")
 	}
 
-	if p.cfg.Debug && orig != finalPath {
-		p.log("[FIX] %s -> %s\n", orig, finalPath)
+	// 8. ПРЕВРАЩАЕМ В ОТНОСИТЕЛЬНЫЙ ПУТЬ
+	// Мы знаем relBase (путь текущей папки от корня) и finalPath (цель от корня)
+	finalRelPath, err := filepath.Rel(relBaseSlash, strings.TrimPrefix(finalPath, "/"))
+	if err != nil {
+		finalRelPath = finalPath
 	}
 
-	return formatResult(u, finalPath), true
+	// Всегда используем Forward Slash для HTML
+	finalRelPath = filepath.ToSlash(finalRelPath)
+
+	if p.cfg.Debug && orig != finalRelPath {
+		p.log("[FIX] %s -> %s\n", orig, finalRelPath)
+	}
+
+	return formatResult(u, finalRelPath), true
 }
 
 func formatResult(u *url.URL, cleanPath string) string {
-	res := "/" + strings.TrimPrefix(path.Clean(cleanPath), "/")
+	res := cleanPath
 	if u.RawQuery != "" {
 		res += "?" + u.RawQuery
 	}
@@ -292,6 +342,27 @@ func (p *Processor) processHTML(src, dst string) (bool, error) {
 	var f func(*html.Node)
 	f = func(n *html.Node) {
 		if n.Type == html.ElementNode {
+			// Удаление скриптов если нужно
+			if n.Data == "script" && len(p.cfg.ScriptsToRemove) > 0 {
+				src := ""
+				for _, a := range n.Attr {
+					if a.Key == "src" {
+						src = a.Val
+					}
+				}
+				for _, pattern := range p.cfg.ScriptsToRemove {
+					if strings.Contains(src, pattern) || (src == "" && pattern == "inline") {
+						// Удаляем узел (заменяем на комментарий или просто удаляем)
+						// В net/html удаление узла сложнее, мы просто изменим его данные на пустые комментарии
+						// или пометим для игнорирования. Но проще всего изменить тип на Comment.
+						n.Type = html.CommentNode
+						n.Data = " [SiteCloner: Script Removed] "
+						n.Attr = nil
+						return // Не идем вглубь удаленного узла
+					}
+				}
+			}
+
 			for i, a := range n.Attr {
 				if isLinkAttr(n.Data, a.Key) || (a.Key == "content" && isMetaURL(n)) {
 					newURL, ok := p.resolveTargetPath(src, a.Val)

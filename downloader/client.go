@@ -1108,6 +1108,9 @@ func NewJob(root string, cfg Config) (*Job, error) {
 }
 
 func (j *Job) Run() {
+	if j.Events != nil {
+		defer close(j.Events)
+	}
 	signal.Notify(j.shutdownChan, os.Interrupt, syscall.SIGTERM)
 
 	// Обработчик завершения
@@ -1162,7 +1165,10 @@ func (j *Job) worker() {
 }
 
 func (j *Job) processURL(urlStr string) {
+	j.mu.Lock()
 	depth := j.depths[urlStr]
+	j.mu.Unlock()
+
 	log.Printf("Processing: %s (depth %d)", urlStr, depth)
 
 	if depth > j.Config.MaxDepth {
