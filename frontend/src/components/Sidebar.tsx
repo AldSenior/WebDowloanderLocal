@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from '../i18n';
 
 interface SidebarProps {
@@ -6,14 +6,14 @@ interface SidebarProps {
     setActiveTab: (tab: string) => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
+const Sidebar: React.FC<SidebarProps> = React.memo(({ activeTab, setActiveTab }) => {
     const { t } = useTranslation();
-    const menuItems = [
+    const menuItems = useMemo(() => [
         { id: 'download', label: t('download'), icon: '⬇️' },
         { id: 'library', label: t('library'), icon: '📚' },
         { id: 'server', label: t('server'), icon: '🌐' },
         { id: 'settings', label: t('settings'), icon: '⚙️' },
-    ];
+    ], [t]);
 
     return (
         <div className="w-64 h-full bg-graphite-800/50 backdrop-blur-xl border-r border-white/5 flex flex-col p-4 select-none">
@@ -50,6 +50,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
             </div>
         </div>
     );
-};
+});
 
 export default Sidebar;

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { useTranslation } from '../i18n';
 
-const Modal = () => {
+const Modal = React.memo(() => {
     const { modal, hideModal } = useApp();
     const { t } = useTranslation();
     const [selectedItems, setSelectedItems] = useState<string[]>([]);
@@ -52,13 +52,13 @@ const Modal = () => {
                             <label
                                 key={opt.id}
                                 className={`flex items-center gap-4 p-4 rounded-2xl border transition-all cursor-pointer group/item ${selectedItems.includes(opt.id)
-                                        ? 'bg-neon-cyan/10 border-neon-cyan/40 shadow-lg shadow-neon-cyan/5'
-                                        : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/10'
+                                    ? 'bg-neon-cyan/10 border-neon-cyan/40 shadow-lg shadow-neon-cyan/5'
+                                    : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/10'
                                     }`}
                             >
                                 <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${selectedItems.includes(opt.id)
-                                        ? 'bg-neon-cyan border-neon-cyan text-white'
-                                        : 'border-white/20 group-hover/item:border-white/40'
+                                    ? 'bg-neon-cyan border-neon-cyan text-white'
+                                    : 'border-white/20 group-hover/item:border-white/40'
                                     }`}>
                                     {selectedItems.includes(opt.id) && '✓'}
                                 </div>
@@ -95,6 +95,6 @@ const Modal = () => {
             </div>
         </div>
     );
-};
+});
 
 export default Modal;

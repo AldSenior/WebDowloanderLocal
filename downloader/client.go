@@ -31,12 +31,12 @@ import (
 )
 
 const (
-	DefaultWorkers     = 6
-	DefaultMaxDepth    = 30
-	DefaultRetries     = 5
-	DefaultDelay       = 2 * time.Second
-	DefaultMaxFileSize = 15 << 20
-	DefaultUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	DefaultWorkers     = 5 // Снижаем с 10 до 5 для экономии памяти
+	DefaultMaxDepth    = 10
+	DefaultRetries     = 3
+	DefaultDelay       = 500 * time.Millisecond
+	DefaultMaxFileSize = 10 * 1024 * 1024 // 10MB
+	DefaultUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 	StateFileExtension = ".state.json"
 )
 
@@ -498,8 +498,22 @@ func (s *DirectoryIndexStrategy) RewriteLink(originalURL, baseURL string) string
 
 	// Для путей без расширения тоже вычисляем относительный путь
 	if !strings.Contains(targetPath, ".") {
-		relativePath := calculateRelativePath(sourcePath, targetPath)
+		// Обеспечиваем, что для DirectoryIndexStrategy путь к папке заканчивается на /
+		normalizedTargetPath := targetPath
+		if !strings.HasSuffix(normalizedTargetPath, "/") {
+			normalizedTargetPath += "/"
+		}
+
+		relativePath := calculateRelativePath(sourcePath, normalizedTargetPath)
 		if relativePath != "" && relativePath != targetPath {
+			parsed.Path = relativePath
+			return parsed.String()
+		}
+	} else {
+		// ДЛЯ ФАЙЛОВ (css, js, images)
+		// Тоже делаем их относительными, но БЕЗ добавления /
+		relativePath := calculateRelativePath(sourcePath, targetPath)
+		if relativePath != "" {
 			parsed.Path = relativePath
 			return parsed.String()
 		}
@@ -510,30 +524,26 @@ func (s *DirectoryIndexStrategy) RewriteLink(originalURL, baseURL string) string
 
 // Вспомогательная функция для вычисления относительного пути
 func calculateRelativePath(fromPath, toPath string) string {
-	// Нормализуем пути
+	// Нормализуем пути (fromPath всегда директория в нашем контексте)
 	if fromPath == "" || fromPath == "/" {
 		fromPath = "/"
 	} else if !strings.HasSuffix(fromPath, "/") {
-		// Если fromPath не заканчивается на /, берем его директорию
-		fromPath = filepath.Dir(fromPath)
-		if fromPath == "." {
-			fromPath = "/"
-		} else {
-			fromPath = fromPath + "/"
-		}
+		fromPath += "/"
 	}
 
 	if toPath == "" || toPath == "/" {
 		toPath = "/"
-	} else if !strings.HasSuffix(toPath, "/") {
-		toPath = toPath + "/"
 	}
+
+	// Запоминаем, был ли слэш в конце целевого пути, чтобы сохранить его
+	// Это критично для отличия файлов от папок в браузере.
+	hasTrailingSlash := strings.HasSuffix(toPath, "/") && toPath != "/"
 
 	// Разбиваем пути на части
 	fromParts := strings.Split(strings.Trim(fromPath, "/"), "/")
 	toParts := strings.Split(strings.Trim(toPath, "/"), "/")
 
-	// Находим общую часть
+	// ... (Находим общую часть)
 	common := 0
 	for i := 0; i < len(fromParts) && i < len(toParts); i++ {
 		if fromParts[i] == toParts[i] {
@@ -562,11 +572,17 @@ func calculateRelativePath(fromPath, toPath string) string {
 		result.WriteString(toParts[i])
 	}
 
-	if result.Len() == 0 {
-		return "./"
+	resStr := result.String()
+	if resStr == "" {
+		resStr = "./"
 	}
 
-	return result.String()
+	// Если в конце был слэш — возвращаем его
+	if hasTrailingSlash && !strings.HasSuffix(resStr, "/") {
+		resStr += "/"
+	}
+
+	return resStr
 }
 
 // FileOnlyStrategy - стратегия "просто файл" для ресурсов
@@ -948,7 +964,10 @@ func (d *Downloader) Download(ctx context.Context, u string) ([]byte, string, er
 		}
 
 		req.Header.Set("User-Agent", d.userAgent)
-		req.Header.Set("Referer", "https://metanit.com/")
+
+		// Используем домен целевого URL в качестве Referer (более надежно)
+		parsed, _ := url.Parse(u)
+		req.Header.Set("Referer", parsed.Scheme+"://"+parsed.Host+"/")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
 
@@ -1116,14 +1135,36 @@ func (j *Job) Run() {
 	signal.Notify(j.shutdownChan, os.Interrupt, syscall.SIGTERM)
 
 	// Обработчик завершения
-	go func() {
-		<-j.shutdownChan
-		log.Println("⚠️  Shutdown signal received, saving state...")
+	defer func() {
+		j.wg.Wait()
+		j.sendLog("📭 All tasks completed, closing pending channel", false)
 		j.cancel()
+
+		if j.Events != nil {
+			j.Events <- "✅ Download completed successfully!"
+		}
+
+		if err := j.saveState(); err != nil {
+			log.Printf("Error saving state: %v", err)
+		}
+		log.Println("✅ Download completed. All links rewritten for local viewing.")
 	}()
 
 	// ПЕРВЫМ запускаем репортер прогресса (для GUI)
 	go j.progressReporter()
+
+	// Первичная очередь
+	normalized, _ := NormalizeURL(j.RootURL)
+	j.mu.Lock()
+	j.depths[normalized] = 0
+	j.visited[normalized] = true
+	j.mu.Unlock()
+
+	// Discover common files (404, robots, etc.)
+	j.discoverCommonFiles()
+
+	j.activeWG.Add(1)
+	j.pending <- normalized
 
 	// Запуск воркеров
 	for i := 0; i < j.Config.Workers; i++ {
@@ -1131,30 +1172,40 @@ func (j *Job) Run() {
 		go j.worker()
 	}
 
-	// Горутина закрытия канала при опустошении очереди
-	go func() {
-		j.activeWG.Wait()
-		log.Println("📭 All tasks completed, closing pending channel")
-		close(j.pending)
-	}()
-
-	// Ожидание завершения всех воркеров
+	j.activeWG.Wait()
+	close(j.pending)
 	j.wg.Wait()
+}
 
-	// Отменяем контекст чтобы остановить progressReporter
-	j.cancel()
-
-	// Отправляем финальное сообщение в GUI
-	if j.Events != nil {
-		j.Events <- "✅ Download completed successfully!"
+func (j *Job) discoverCommonFiles() {
+	commonPaths := []string{
+		"/404", "/404.html", "/robots.txt", "/sitemap.xml", "/favicon.ico",
+		"/apple-touch-icon.png", "/manifest.json",
 	}
 
-	// Сохранение состояния
-	if err := j.saveState(); err != nil {
-		log.Printf("Error saving state: %v", err)
+	parsed, err := url.Parse(j.RootURL)
+	if err != nil {
+		return
 	}
+	baseURL := parsed.Scheme + "://" + parsed.Host
 
-	log.Println("✅ Download completed. All links rewritten for local viewing.")
+	for _, p := range commonPaths {
+		targetURL := baseURL + p
+		j.mu.Lock()
+		if _, exists := j.depths[targetURL]; !exists {
+			j.depths[targetURL] = 0 // Treat as root level
+			j.mu.Unlock()
+			j.activeWG.Add(1)
+			select {
+			case j.pending <- targetURL:
+				j.sendLog(fmt.Sprintf("[Discovery] Queued common file: %s", p), false)
+			default:
+				j.activeWG.Done()
+			}
+		} else {
+			j.mu.Unlock()
+		}
+	}
 }
 
 func (j *Job) worker() {
@@ -1327,7 +1378,8 @@ func (j *Job) saveState() error {
 				Config:      j.Config,
 			}
 
-			data, err := json.MarshalIndent(state, "", "  ")
+			// Используем Marshal вместо MarshalIndent для экономии памяти и места
+			data, err := json.Marshal(state)
 			if err != nil {
 				return err
 			}

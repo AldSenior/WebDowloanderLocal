@@ -1,12 +1,50 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 // @ts-ignore
 import { DownloadSite } from "../../wailsjs/go/main/App";
 import { useTranslation } from "../i18n";
 import { useApp } from "../context/AppContext";
 
+const LogEntry = React.memo(({ log }: { log: string }) => {
+  const isError = log.includes("Error");
+  const isSuccess = useMemo(
+    () =>
+      log.includes("Done") ||
+      log.includes("Success") ||
+      log.includes("DONE") ||
+      log.includes("complete"),
+    [log],
+  );
+
+  return (
+    <div className="text-gray-300 break-all flex items-start hover:bg-white/5 rounded px-2 py-0.5 transition-colors group/line">
+      <span className="text-neon-cyan/60 mr-3 select-none opacity-40 group-hover/line:opacity-100 transition-opacity">
+        ➜
+      </span>
+      <span
+        className={
+          isError
+            ? "text-red-400"
+            : isSuccess
+              ? "text-green-400"
+              : "text-gray-300"
+        }
+      >
+        {log}
+      </span>
+    </div>
+  );
+});
+
 const DownloadView = () => {
   const { t } = useTranslation();
-  const { isDownloading, setIsDownloading, downloadLogs, setDownloadLogs } = useApp();
+  const { isDownloading, setIsDownloading, downloadLogs, setDownloadLogs } =
+    useApp();
   const [url, setUrl] = useState("");
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -14,32 +52,39 @@ const DownloadView = () => {
     if (logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [downloadLogs]);
+  }, [downloadLogs.length]);
 
-  const handleDownload = async () => {
+  const handleDownload = useCallback(async () => {
     if (!url) return;
     setDownloadLogs([`> Starting download: ${url}`]);
     setIsDownloading(true);
     try {
       const res = await DownloadSite(url, "downloads");
-      // Check for backend errors returned as strings or early exits
       if (res && res.startsWith("Error")) {
-        setDownloadLogs(prev => [...prev, `[System] ${res}`]);
+        setDownloadLogs((prev) => [...prev, `[System] ${res}`]);
         setIsDownloading(false);
       } else if (res === "Download already in progress") {
-        setDownloadLogs(prev => [...prev, "[System] This URL is already being downloaded."]);
+        setDownloadLogs((prev) => [
+          ...prev,
+          "[System] This URL is already being downloaded.",
+        ]);
         setIsDownloading(false);
       }
     } catch (err) {
       setDownloadLogs((prev) => [...prev, `[Bridge Error] ${err}`]);
       setIsDownloading(false);
     }
-  };
+  }, [url, setDownloadLogs, setIsDownloading]);
 
-  const handleForceReset = () => {
+  const handleForceReset = useCallback(() => {
     setIsDownloading(false);
-    setDownloadLogs(prev => [...prev, "[System] Manual UI state reset by user."]);
-  };
+    setDownloadLogs((prev) => [
+      ...prev,
+      "[System] Manual UI state reset by user.",
+    ]);
+  }, [setIsDownloading, setDownloadLogs]);
+
+  const memoizedLogs = useMemo(() => downloadLogs, [downloadLogs]);
 
   return (
     <div className="flex flex-col h-full gap-6">
@@ -60,14 +105,15 @@ const DownloadView = () => {
             <button
               onClick={handleDownload}
               disabled={isDownloading}
-              className={`px-8 py-3 rounded-xl font-bold transition-all shadow-lg flex items-center gap-2 ${isDownloading
-                ? "bg-gray-700/50 text-gray-400 cursor-not-allowed border border-white/5"
-                : "bg-gradient-to-r from-neon-cyan to-blue-600 hover:shadow-neon-cyan/25 hover:scale-105 active:scale-95 text-white"
-                }`}
+              className={`px-8 py-3 rounded-xl font-bold transition-all shadow-lg flex items-center gap-2 ${
+                isDownloading
+                  ? "bg-gray-700/50 text-gray-400 cursor-not-allowed border border-white/5"
+                  : "bg-gradient-to-r from-neon-cyan to-blue-600 hover:shadow-neon-cyan/25 hover:scale-105 active:scale-95 text-white"
+              }`}
             >
               {isDownloading ? (
                 <>
-                  <span className="animate-spin text-xl">⚙️</span>{" "}
+                  <span className="animate-spin text-xl">⚙️</span>
                   {t("processing")}
                 </>
               ) : (
@@ -80,7 +126,9 @@ const DownloadView = () => {
                 className="w-12 h-12 flex items-center justify-center bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-xl border border-red-500/10 transition-all group/reset"
                 title="Force Reset UI State"
               >
-                <span className="group-hover:rotate-90 transition-transform font-bold">✕</span>
+                <span className="group-hover:rotate-90 transition-transform font-bold">
+                  ✕
+                </span>
               </button>
             )}
           </div>
@@ -99,33 +147,14 @@ const DownloadView = () => {
           </span>
         </div>
 
-        <div className="mt-10 flex-1 overflow-y-auto space-y-1.5 p-2 font-mono scrollbar-custom">
-          {downloadLogs.length === 0 && (
+        <div className="mt-10 flex-1 overflow-y-auto space-y-0.5 p-2 font-mono scrollbar-custom">
+          {memoizedLogs.length === 0 && (
             <div className="h-full flex items-center justify-center text-gray-700">
               <span className="italic">{t("waiting")}</span>
             </div>
           )}
-          {downloadLogs.map((log, i) => (
-            <div
-              key={i}
-              className="text-gray-300 break-all flex items-start hover:bg-white/5 rounded px-2 py-0.5 transition-colors"
-            >
-              <span className="text-neon-cyan/60 mr-3 select-none">➜</span>
-              <span
-                className={
-                  log.includes("Error")
-                    ? "text-red-400"
-                    : log.includes("Done") ||
-                      log.includes("Success") ||
-                      log.includes("DONE") ||
-                      log.includes("complete")
-                      ? "text-green-400"
-                      : "text-gray-300"
-                }
-              >
-                {log}
-              </span>
-            </div>
+          {memoizedLogs.map((log, i) => (
+            <LogEntry key={`${i}-${log.substring(0, 30)}`} log={log} />
           ))}
           <div ref={logEndRef} />
         </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import Sidebar from "./components/Sidebar";
 import DownloadView from "./components/DownloadView";
 import LibraryGrid from "./components/LibraryGrid";
@@ -12,7 +12,7 @@ function MainLayout() {
     const [activeTab, setActiveTab] = useState("download");
     const { theme } = useApp();
 
-    const renderContent = () => {
+    const renderContent = useCallback(() => {
         switch (activeTab) {
             case "download":
                 return <DownloadView />;
@@ -25,7 +25,7 @@ function MainLayout() {
             default:
                 return <DownloadView />;
         }
-    };
+    }, [activeTab]);
 
     return (
         <div id="app" className={`flex h-screen w-screen bg-graphite-900 text-white overflow-hidden font-sans selection:bg-neon-cyan/30 theme-${theme}`}>

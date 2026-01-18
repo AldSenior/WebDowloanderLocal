@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -73,34 +74,32 @@ func (a *App) DownloadSite(urlStr string, outputDir string) string {
 		UserAgent:   downloader.DefaultUserAgent,
 	}
 
-	job, err := downloader.NewJob(urlStr, cfg)
-	if err != nil {
-		a.activeJobs.Delete("dl:" + normalizedURL)
-		return fmt.Sprintf("Error creating job: %v", err)
-	}
-
-	logDone := make(chan bool)
+	// The new go func block replaces the existing two go func blocks
 	go func() {
-		for msg := range job.Events {
-			runtime.EventsEmit(a.ctx, "download:log", msg)
+		// Defensive cleanup
+		defer func() {
+			a.activeJobs.Delete("dl:" + normalizedURL)
+			runtime.EventsEmit(a.ctx, "download:done", normalizedURL)
+			runtime.EventsEmit(a.ctx, "library:refresh", "DONE") // Added this from original defer
+			log.Printf("[System] Job for %s cleaned up", normalizedURL)
+		}()
+
+		runtime.EventsEmit(a.ctx, "download:start", normalizedURL)
+
+		job, err := downloader.NewJob(urlStr, cfg)
+		if err != nil {
+			runtime.EventsEmit(a.ctx, "download:log", "[Error] "+err.Error())
+			return
 		}
-		logDone <- true
-	}()
 
-	go func() {
-		defer a.activeJobs.Delete("dl:" + normalizedURL)
-		defer runtime.EventsEmit(a.ctx, "download:done", "DONE")
-		defer runtime.EventsEmit(a.ctx, "library:refresh", "DONE")
+		// Передаем логи в GUI
+		go func() {
+			for msg := range job.Events {
+				runtime.EventsEmit(a.ctx, "download:log", msg)
+			}
+		}()
 
-		runtime.EventsEmit(a.ctx, "download:start", urlStr)
 		job.Run()
-
-		select {
-		case <-logDone:
-		case <-time.After(5 * time.Second):
-			// Failsafe for hanging logs
-		}
-
 		runtime.EventsEmit(a.ctx, "download:log", "[System] Download phase complete.")
 	}()
 
@@ -266,7 +265,7 @@ func (a *App) getEntryPath(dir string) string {
 			return nil
 		}
 
-		if strings.ToLower(d.Name()) == "index.html" {
+		if strings.ToLower(d.Name()) == "index.html" && !strings.Contains(strings.ToLower(rel), "404") {
 			if depth < minDepth {
 				minDepth = depth
 				bestEntry = filepath.ToSlash(rel)
@@ -464,11 +463,38 @@ func (a *App) stopServerNoLock() string {
 
 // LaunchSite starts server and opens browser
 func (a *App) LaunchSite(path string) string {
+	// Мы хотим всегда запускать сервер от корня хоста (например, downloads/wails.io),
+	// чтобы работали абсолютные ссылки от корня (/assets/...)
+
+	absPath, _ := filepath.Abs(path)
+	downloadsDir, _ := filepath.Abs("downloads")
+
+	// Находим папку хоста (первый уровень внутри downloads)
+	rel, err := filepath.Rel(downloadsDir, absPath)
+	if err == nil && !strings.HasPrefix(rel, "..") {
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) > 0 {
+			hostDir := filepath.Join(downloadsDir, parts[0])
+			serverUrl := a.StartServer(hostDir, "")
+			if serverUrl != "Error" {
+				// Теперь вычисляем путь входа относительно КОРНЯ ХОСТА
+				entryPath := a.getEntryPath(absPath)
+				// Если мы запускаем подпапку (например, /ru),
+				// то entryPath будет относительным к /ru. Нам нужен относительный к хосту.
+				fullRelEntry, _ := filepath.Rel(hostDir, filepath.Join(absPath, entryPath))
+
+				finalUrl := strings.TrimSuffix(serverUrl, "/") + "/" + strings.TrimPrefix(filepath.ToSlash(fullRelEntry), "/")
+				runtime.BrowserOpenURL(a.ctx, finalUrl)
+				return "Launched " + finalUrl
+			}
+		}
+	}
+
+	// Fallback если что-то пошло не так
 	urlStr := a.StartServer(path, "")
 	if urlStr != "Error" {
 		entryPath := a.getEntryPath(path)
 		if entryPath != "" {
-			// Avoid double slashes and ensure proper URL formatting
 			urlStr = strings.TrimSuffix(urlStr, "/") + "/" + strings.TrimPrefix(entryPath, "/")
 		}
 		runtime.BrowserOpenURL(a.ctx, urlStr)

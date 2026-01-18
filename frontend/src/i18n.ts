@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { useApp } from './context/AppContext';
 
 export const i18n = {
@@ -106,9 +107,9 @@ export type Lang = keyof typeof i18n;
 export const useTranslation = () => {
     const { lang, setLang } = useApp();
 
-    const t = (key: keyof typeof i18n.en) => {
+    const t = useCallback((key: keyof typeof i18n.en) => {
         return i18n[lang][key] || i18n.en[key];
-    };
+    }, [lang]);
 
     return { t, lang, setLang };
 };

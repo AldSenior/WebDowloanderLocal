@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback, useMemo } from 'react';
 // @ts-ignore
 import { EventsOn } from "../../wailsjs/runtime";
 
@@ -64,7 +64,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return (localStorage.getItem('lang') as Lang) || 'ru';
     });
 
-    const [engineSettings, setEngineSettings] = useState<EngineSettings>(() => {
+    const [engineSettings, setEngineSettingsState] = useState<EngineSettings>(() => {
         const saved = localStorage.getItem('engineSettings');
         return saved ? JSON.parse(saved) : {
             workers: 20,
@@ -149,36 +149,49 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         };
     }, []);
 
-    const setTheme = (t: Theme) => setThemeState(t);
-    const setLang = (l: Lang) => setLangState(l);
+    const setTheme = useCallback((t: Theme) => setThemeState(t), []);
+    const setLang = useCallback((l: Lang) => setLangState(l), []);
+    const setEngineSettings = useCallback((s: EngineSettings) => setEngineSettingsState(s), []);
 
-    const addToast = (message: string, type: Toast['type']) => {
+    const removeToast = useCallback((id: string) => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, []);
+
+    const addToast = useCallback((message: string, type: Toast['type']) => {
         const id = Math.random().toString(36).substr(2, 9);
         setToasts((prev) => [...prev, { id, message, type }]);
         setTimeout(() => removeToast(id), 5000);
-    };
+    }, [removeToast]);
 
-    const removeToast = (id: string) => {
-        setToasts((prev) => prev.filter((t) => t.id !== id));
-    };
+    const showModal = useCallback((config: ModalConfig) => setModal(config), []);
+    const hideModal = useCallback(() => setModal(null), []);
 
-    const showModal = (config: ModalConfig) => setModal(config);
-    const hideModal = () => setModal(null);
+    const clearDownloadLogs = useCallback(() => setDownloadLogs([]), []);
 
-    const clearDownloadLogs = () => setDownloadLogs([]);
+    const contextValue = useMemo(() => ({
+        theme, setTheme,
+        lang, setLang,
+        engineSettings, setEngineSettings,
+        toasts, addToast, removeToast,
+        modal, showModal, hideModal,
+        isDownloading, setIsDownloading,
+        downloadLogs, setDownloadLogs,
+        clearDownloadLogs,
+        servingPath, setServingPath
+    }), [
+        theme, setTheme,
+        lang, setLang,
+        engineSettings, setEngineSettings,
+        toasts, addToast, removeToast,
+        modal, showModal, hideModal,
+        isDownloading, setIsDownloading,
+        downloadLogs, setDownloadLogs,
+        clearDownloadLogs,
+        servingPath, setServingPath
+    ]);
 
     return (
-        <AppContext.Provider value={{
-            theme, setTheme,
-            lang, setLang,
-            engineSettings, setEngineSettings,
-            toasts, addToast, removeToast,
-            modal, showModal, hideModal,
-            isDownloading, setIsDownloading,
-            downloadLogs, setDownloadLogs,
-            clearDownloadLogs,
-            servingPath, setServingPath
-        }}>
+        <AppContext.Provider value={contextValue}>
             {children}
         </AppContext.Provider>
     );

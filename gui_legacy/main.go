@@ -456,7 +456,7 @@ func main() {
 			}
 
 			// 3. Process the COPIED directory
-			p.Process(outputPath)
+			p.Process(outputPath, nil)
 
 			time.Sleep(200 * time.Millisecond)
 

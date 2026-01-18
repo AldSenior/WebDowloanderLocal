@@ -5,7 +5,7 @@ import { StartServer, StopServer, SelectFolder } from "../../wailsjs/go/main/App
 import { EventsOn } from "../../wailsjs/runtime";
 import { useTranslation } from '../i18n';
 
-const ServerView = () => {
+const ServerView = React.memo(() => {
     const { t } = useTranslation();
     const [status, setStatus] = useState(t('stopped'));
     const [port, setPort] = useState("8080");
@@ -14,7 +14,7 @@ const ServerView = () => {
     const [logs, setLogs] = useState<string[]>([]);
 
     useEffect(() => {
-        EventsOn("server:status", (msg: string) => {
+        const cleanupStatus = EventsOn("server:status", (msg: string) => {
             if (msg.includes("Running") || msg.includes("http")) {
                 setIsRunning(true);
                 setStatus(msg);
@@ -25,14 +25,19 @@ const ServerView = () => {
                 setLogs(prev => [...prev.slice(-100), `[${t('system')}] ${t('stopped')}`]);
             }
         });
-        EventsOn("server:error", (msg: string) => {
+        const cleanupError = EventsOn("server:error", (msg: string) => {
             setIsRunning(false);
             setStatus(t('error'));
             setLogs(prev => [...prev.slice(-100), `[${t('error')}] ${msg}`]);
         });
-    }, []);
 
-    const toggleServer = async () => {
+        return () => {
+            cleanupStatus();
+            cleanupError();
+        };
+    }, [t]);
+
+    const toggleServer = React.useCallback(async () => {
         if (isRunning) {
             const res = await StopServer();
             setLogs(prev => [...prev.slice(-100), `[CMD] ${res}`]);
@@ -40,12 +45,12 @@ const ServerView = () => {
             const res = await StartServer(directory, port);
             setLogs(prev => [...prev.slice(-100), `[${t('system')}] ${t('started_at')} ${res}`]);
         }
-    };
+    }, [isRunning, directory, port, t]);
 
-    const handleSelectFolder = async () => {
+    const handleSelectFolder = React.useCallback(async () => {
         const folder = await SelectFolder();
         if (folder) setDirectory(folder);
-    };
+    }, []);
 
     return (
         <div className="h-full flex flex-col gap-6">
@@ -116,6 +121,6 @@ const ServerView = () => {
             </div>
         </div>
     );
-};
+});
 
 export default ServerView;

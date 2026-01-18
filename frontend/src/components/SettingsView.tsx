@@ -2,19 +2,19 @@ import React from 'react';
 import { useTranslation } from '../i18n';
 import { useApp } from '../context/AppContext';
 
-const SettingsView = () => {
+const SettingsView = React.memo(() => {
     const { t, lang, setLang } = useTranslation();
     const { theme, setTheme, engineSettings, setEngineSettings, addToast } = useApp();
 
-    const handleThemeChange = (newTheme: 'graphite' | 'ocean' | 'matrix') => {
+    const handleThemeChange = React.useCallback((newTheme: 'graphite' | 'ocean' | 'matrix') => {
         setTheme(newTheme);
         addToast(`${t('theme')}: ${newTheme}`, 'success');
-    };
+    }, [setTheme, addToast, t]);
 
-    const handleLanguageChange = (newLang: 'en' | 'ru') => {
+    const handleLanguageChange = React.useCallback((newLang: 'en' | 'ru') => {
         setLang(newLang);
         addToast(newLang === 'en' ? 'Language changed to English' : 'Язык изменен на Русский', 'info');
-    };
+    }, [setLang, addToast]);
 
     return (
         <div className="h-full flex flex-col gap-6 overflow-y-auto pr-4 scrollbar-custom">
@@ -119,6 +119,6 @@ const SettingsView = () => {
             </div>
         </div>
     );
-};
+});
 
 export default SettingsView;
