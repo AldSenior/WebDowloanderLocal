@@ -47,6 +47,10 @@ interface AppContextType {
     downloadLogs: string[];
     setDownloadLogs: (logs: string[] | ((prev: string[]) => string[])) => void;
     clearDownloadLogs: () => void;
+
+    // Server State
+    servingPath: string | null;
+    setServingPath: (path: string | null) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -75,6 +79,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     // Download state (persists across tab switches)
     const [isDownloading, setIsDownloading] = useState(false);
     const [downloadLogs, setDownloadLogs] = useState<string[]>([]);
+
+    // Server state
+    const [servingPath, setServingPath] = useState<string | null>(null);
 
     useEffect(() => {
         localStorage.setItem('theme', theme);
@@ -124,10 +131,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             flushLogs();
         });
 
+        const cleanupServerStarted = EventsOn("server:started", (data: { path: string }) => {
+            setServingPath(data.path);
+        });
+
+        const cleanupServerStopped = EventsOn("server:stopped", () => {
+            setServingPath(null);
+        });
+
         return () => {
             cleanupLog();
             cleanupStart();
             cleanupDone();
+            cleanupServerStarted();
+            cleanupServerStopped();
             if (throttleTimer) clearTimeout(throttleTimer);
         };
     }, []);
@@ -159,7 +176,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             modal, showModal, hideModal,
             isDownloading, setIsDownloading,
             downloadLogs, setDownloadLogs,
-            clearDownloadLogs
+            clearDownloadLogs,
+            servingPath, setServingPath
         }}>
             {children}
         </AppContext.Provider>

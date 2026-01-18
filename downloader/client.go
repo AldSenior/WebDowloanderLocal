@@ -1042,17 +1042,19 @@ func (j *Job) progressReporter() {
 			msg := fmt.Sprintf("Файлов: %d | Скорость: %.2f KB/s | В очереди: %d",
 				j.stats.TotalFiles, speed/1024, len(j.pending))
 
-			// Проверяем инициализацию канала (для совместимости с CLI)
-			if j.Events != nil {
-				select {
-				case j.Events <- msg:
-				default:
-				}
-			} else {
-				log.Println(msg) // Fallback для CLI
-			}
+			j.sendLog(msg, false)
 		}
 	}
+}
+
+func (j *Job) sendLog(msg string, terminalOnly bool) {
+	if !terminalOnly && j.Events != nil {
+		select {
+		case j.Events <- msg:
+		default:
+		}
+	}
+	log.Println(msg)
 }
 func NewJob(root string, cfg Config) (*Job, error) {
 	parsed, err := url.Parse(root)
@@ -1169,18 +1171,18 @@ func (j *Job) processURL(urlStr string) {
 	depth := j.depths[urlStr]
 	j.mu.Unlock()
 
-	log.Printf("Processing: %s (depth %d)", urlStr, depth)
+	j.sendLog(fmt.Sprintf("[Info] Processing: %s (depth %d)", urlStr, depth), false)
 
 	if depth > j.Config.MaxDepth {
 		atomic.AddInt64(&j.stats.Skipped, 1)
-		log.Printf("Max depth reached for %s", urlStr)
+		j.sendLog(fmt.Sprintf("[Skip] Max depth reached: %s", urlStr), false)
 		return
 	}
 
 	// Скачиваем файл - БЕЗ изменений URL!
 	content, contentType, err := j.Downloader.Download(j.ctx, urlStr)
 	if err != nil {
-		log.Printf("Download failed for %s: %v", urlStr, err)
+		j.sendLog(fmt.Sprintf("[Error] Failed to download %s: %v", urlStr, err), false)
 		atomic.AddInt64(&j.stats.Failed, 1)
 		return
 	}
@@ -1191,7 +1193,7 @@ func (j *Job) processURL(urlStr string) {
 	if j.hashes[hash] {
 		j.mu.Unlock()
 		atomic.AddInt64(&j.stats.Skipped, 1)
-		log.Printf("Duplicate content for %s", urlStr)
+		j.sendLog(fmt.Sprintf("[Skip] Duplicate content: %s", urlStr), false)
 		return
 	}
 	j.hashes[hash] = true
@@ -1216,9 +1218,9 @@ func (j *Job) processURL(urlStr string) {
 		}
 	}
 
-	savedPath, err := SaveFileV2(j.Config.OutputDir, urlStr, modifiedContent, contentType)
+	_, err = SaveFileV2(j.Config.OutputDir, urlStr, modifiedContent, contentType)
 	if err != nil {
-		log.Printf("Save failed for %s: %v", urlStr, err)
+		j.sendLog(fmt.Sprintf("[Error] Save failed for %s: %v", urlStr, err), false)
 		atomic.AddInt64(&j.stats.Failed, 1)
 		return
 	}
@@ -1231,7 +1233,7 @@ func (j *Job) processURL(urlStr string) {
 	j.stats.FileTypes[contentType]++
 	j.mu.Unlock()
 
-	log.Printf("✅ Saved: %s → %s", urlStr, savedPath)
+	j.sendLog(fmt.Sprintf("[Done] Saved: %s", urlStr), false)
 
 	// Парсим ссылки для дальнейшего скачивания (используем оригинальный контент!)
 	if depth < j.Config.MaxDepth {

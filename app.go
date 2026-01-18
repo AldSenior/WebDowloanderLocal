@@ -22,9 +22,11 @@ import (
 
 // App struct
 type App struct {
-	ctx        context.Context
-	server     *http.Server
-	activeJobs sync.Map // Map for tracking active adaptation jobs
+	ctx         context.Context
+	server      *http.Server
+	activeJobs  sync.Map // Map for tracking active adaptation jobs
+	mu          sync.Mutex
+	servingPath string // Path of the site currently being served
 }
 
 // SiteMeta represents a downloaded site
@@ -63,7 +65,7 @@ func (a *App) DownloadSite(urlStr string, outputDir string) string {
 
 	cfg := downloader.Config{
 		OutputDir:   outputDir,
-		Workers:     20,
+		Workers:     10,
 		Retries:     5,
 		MaxDepth:    15,
 		Delay:       200 * time.Millisecond,
@@ -87,12 +89,19 @@ func (a *App) DownloadSite(urlStr string, outputDir string) string {
 
 	go func() {
 		defer a.activeJobs.Delete("dl:" + normalizedURL)
+		defer runtime.EventsEmit(a.ctx, "download:done", "DONE")
+		defer runtime.EventsEmit(a.ctx, "library:refresh", "DONE")
+
 		runtime.EventsEmit(a.ctx, "download:start", urlStr)
 		job.Run()
-		<-logDone // Wait for all logs to be emitted
+
+		select {
+		case <-logDone:
+		case <-time.After(5 * time.Second):
+			// Failsafe for hanging logs
+		}
+
 		runtime.EventsEmit(a.ctx, "download:log", "[System] Download phase complete.")
-		runtime.EventsEmit(a.ctx, "download:done", "DONE")
-		runtime.EventsEmit(a.ctx, "library:refresh", "DONE")
 	}()
 
 	return "Download started"
@@ -140,6 +149,9 @@ func (a *App) AdaptPaths(path string, scriptsToRemove []string) string {
 		p.OnLog = func(msg string) {
 			msg = stripAnsi(msg)
 			if msg != "" {
+				if strings.Contains(msg, "[ANALYZING]") {
+					runtime.EventsEmit(a.ctx, "adaptation:analyzing", normalized)
+				}
 				runtime.EventsEmit(a.ctx, "download:log", "[Processor] "+msg)
 				processed := atomic.LoadInt64(&p.Stats.FilesProcessed)
 				total := p.Stats.TotalFiles
@@ -229,18 +241,39 @@ func (a *App) GetDownloads() []SiteMeta {
 	return sites
 }
 
-// getEntryPath finds the relative path to the best index.html
+// getEntryPath finds the relative path to the best index.html with depth limit
 func (a *App) getEntryPath(dir string) string {
+	// 1. Fast path: check root
+	if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
+		return "index.html"
+	}
+
 	var bestEntry string
 	minDepth := 999
 
+	// 2. Limited search
 	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && strings.ToLower(d.Name()) == "index.html" {
-			rel, _ := filepath.Rel(dir, p)
-			depth := strings.Count(rel, string(os.PathSeparator))
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		depth := strings.Count(rel, string(os.PathSeparator))
+
+		if d.IsDir() {
+			if depth > 3 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if strings.ToLower(d.Name()) == "index.html" {
 			if depth < minDepth {
 				minDepth = depth
 				bestEntry = filepath.ToSlash(rel)
+				// If we found something at level 1 or 2, good enough
+				if depth <= 1 {
+					return fmt.Errorf("stop")
+				}
 			}
 		}
 		return nil
@@ -248,7 +281,7 @@ func (a *App) getEntryPath(dir string) string {
 	return bestEntry
 }
 
-// getSiteIcon searches for favicon in the directory and returns Base64
+// getSiteIcon searches for favicon with depth limit
 func (a *App) getSiteIcon(path string) string {
 	iconFiles := []string{
 		"favicon.ico", "favicon.png", "favicon.svg", "apple-touch-icon.png", "icon.png",
@@ -271,13 +304,16 @@ func (a *App) getSiteIcon(path string) string {
 		if err != nil {
 			return nil
 		}
+		rel, _ := filepath.Rel(path, p)
+		depth := strings.Count(rel, string(os.PathSeparator))
+
 		if d.IsDir() {
-			rel, _ := filepath.Rel(path, p)
-			if strings.Count(rel, string(os.PathSeparator)) > 3 {
+			if depth > 2 {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+
 		name := strings.ToLower(d.Name())
 		if strings.Contains(name, "favicon") || strings.Contains(name, "apple-touch-icon") {
 			ext := filepath.Ext(name)
@@ -343,8 +379,12 @@ func (a *App) findFreePort(startPort int) int {
 
 // StartServer starts a static file server with dynamic port fallback
 func (a *App) StartServer(dir string, portStr string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if a.server != nil {
-		a.StopServer()
+		// Stop the existing server before starting a new one
+		a.stopServerNoLock()
 	}
 
 	port := 8080
@@ -372,12 +412,21 @@ func (a *App) StartServer(dir string, portStr string) string {
 		Addr:    ":" + portStr,
 		Handler: http.FileServer(http.Dir(dir)),
 	}
+	a.servingPath = filepath.ToSlash(dir)
 
 	go func() {
 		runtime.EventsEmit(a.ctx, "server:status", fmt.Sprintf("http://localhost:%s", portStr))
+		runtime.EventsEmit(a.ctx, "server:started", map[string]string{
+			"url":  fmt.Sprintf("http://localhost:%s", portStr),
+			"path": a.servingPath,
+		})
 		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			runtime.EventsEmit(a.ctx, "server:error", err.Error())
+			a.mu.Lock()
 			a.server = nil
+			a.servingPath = ""
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "server:stopped", "ERROR")
 		}
 	}()
 
@@ -386,16 +435,28 @@ func (a *App) StartServer(dir string, portStr string) string {
 
 // StopServer stops the running server
 func (a *App) StopServer() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.stopServerNoLock()
+}
+
+func (a *App) stopServerNoLock() string {
 	if a.server != nil {
 		s := a.server
 		a.server = nil
+		serving := a.servingPath
+		a.servingPath = ""
+
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := s.Shutdown(ctx); err != nil {
 			s.Close()
+			runtime.EventsEmit(a.ctx, "server:status", "Forced stop")
+			runtime.EventsEmit(a.ctx, "server:stopped", serving)
 			return "Forced stop"
 		}
 		runtime.EventsEmit(a.ctx, "server:status", "Stopped")
+		runtime.EventsEmit(a.ctx, "server:stopped", serving)
 		return "Stopped"
 	}
 	return "Not running"

@@ -123,6 +123,7 @@ func (p *Processor) Process(sourceDir string, scriptsToRemove []string) {
 	p.log("[START] Обработка: %s -> %s\n", p.cfg.Dir, p.cfg.OutputDir)
 
 	// Pre-scan for progress
+	p.log("[ANALYZING] Подсчет файлов для прогресса...")
 	var total int64
 	filepath.WalkDir(sourceDir, func(_ string, d os.DirEntry, _ error) error {
 		if !d.IsDir() {

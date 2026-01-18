@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 // @ts-ignore
-import { GetDownloads, OpenFolder, LaunchSite, DeleteSite, AdaptPaths, AnalyzeScripts } from "../../wailsjs/go/main/App";
+import { GetDownloads, OpenFolder, LaunchSite, StopServer, DeleteSite, AdaptPaths, AnalyzeScripts } from "../../wailsjs/go/main/App";
 // @ts-ignore
 import { EventsOn } from "../../wailsjs/runtime";
 import { useTranslation } from '../i18n';
@@ -22,11 +22,12 @@ interface Progress {
 
 const LibraryGrid = () => {
     const { t } = useTranslation();
-    const { addToast, showModal } = useApp();
+    const { addToast, showModal, servingPath } = useApp();
     const [sites, setSites] = useState<Site[]>([]);
     const [loading, setLoading] = useState(true);
     const [progressMap, setProgressMap] = useState<Record<string, Progress>>({});
     const [isAdaptingMap, setIsAdaptingMap] = useState<Record<string, boolean>>({});
+    const [isAnalyzingMap, setIsAnalyzingMap] = useState<Record<string, boolean>>({});
 
     const fetchSites = async () => {
         setLoading(true);
@@ -50,6 +51,7 @@ const LibraryGrid = () => {
 
         const cleanupProgress = EventsOn("adaptation:progress", (data: any) => {
             const normalizedPath = data.path.replace(/\\/g, '/');
+            setIsAnalyzingMap(prev => ({ ...prev, [normalizedPath]: false }));
             setProgressMap(prev => ({
                 ...prev,
                 [normalizedPath]: {
@@ -60,6 +62,11 @@ const LibraryGrid = () => {
             }));
         });
 
+        const cleanupAnalyzing = EventsOn("adaptation:analyzing", (path: string) => {
+            const normalizedPath = path.replace(/\\/g, '/');
+            setIsAnalyzingMap(prev => ({ ...prev, [normalizedPath]: true }));
+        });
+
         const cleanupStart = EventsOn("adapting:start", (path: string) => {
             const normalizedPath = path.replace(/\\/g, '/');
             setIsAdaptingMap(prev => ({ ...prev, [normalizedPath]: true }));
@@ -68,6 +75,8 @@ const LibraryGrid = () => {
         const cleanupDone = EventsOn("adapting:done", (path: string) => {
             const normalizedPath = path.replace(/\\/g, '/');
             setIsAdaptingMap(prev => ({ ...prev, [normalizedPath]: false }));
+            setIsAnalyzingMap(prev => ({ ...prev, [normalizedPath]: false }));
+
             // Give it a moment to show 100% before removing
             setTimeout(() => {
                 setProgressMap(prev => {
@@ -81,6 +90,7 @@ const LibraryGrid = () => {
         return () => {
             cleanupRefresh();
             cleanupProgress();
+            cleanupAnalyzing();
             cleanupStart();
             cleanupDone();
         };
@@ -98,6 +108,16 @@ const LibraryGrid = () => {
         } catch (err) {
             console.error("Launch failed:", err);
             addToast("Launch failed", "error");
+        }
+    };
+
+    const handleStop = async () => {
+        try {
+            await StopServer();
+            addToast(t('stopped'), 'info');
+        } catch (err) {
+            console.error("Stop failed:", err);
+            addToast("Stop failed", "error");
         }
     };
 
@@ -199,12 +219,14 @@ const LibraryGrid = () => {
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 overflow-y-auto pb-32 pt-4 scrollbar-custom px-6 -mx-6">
                     {sites.map((site, i) => {
+                        const normalizedPath = site.path.replace(/\\/g, '/');
                         const isProcessed = site.path.endsWith("_processed");
                         const displayName = site.domain || site.name;
-                        const normalizedPath = site.path.replace(/\\/g, '/');
                         const progress = progressMap[normalizedPath];
                         const percent = progress ? Math.min(Math.round((progress.current / progress.total) * 100), 100) : 0;
                         const isAdapting = isAdaptingMap[normalizedPath];
+                        const isAnalyzing = isAnalyzingMap[normalizedPath];
+                        const isRunning = servingPath === normalizedPath;
 
                         return (
                             <div
@@ -267,7 +289,7 @@ const LibraryGrid = () => {
                                 {isAdapting && (
                                     <div className="mb-6 animate-pulse-subtle">
                                         <div className="flex justify-between text-[10px] font-mono text-neon-cyan mb-1.5 px-0.5">
-                                            <span className="animate-pulse">ADAPTING...</span>
+                                            <span className="animate-pulse">{isAnalyzing ? t('analyzing').toUpperCase() : 'ADAPTING...'}</span>
                                             <span>{percent}%</span>
                                         </div>
                                         <div className="h-2 w-full bg-black/40 rounded-full overflow-hidden border border-white/5 shadow-inner">
@@ -276,27 +298,36 @@ const LibraryGrid = () => {
                                                 style={{ width: `${percent}%` }}
                                             ></div>
                                         </div>
-                                        <div className="text-[9px] text-gray-500 mt-1 font-mono flex justify-between italic uppercase tracking-tighter">
-                                            <span>{progress?.current ?? 0} files</span>
-                                            <span>of {progress?.total ?? '...'}</span>
-                                        </div>
+                                        {!isAnalyzing && (
+                                            <div className="text-[9px] text-gray-500 mt-1 font-mono flex justify-between italic uppercase tracking-tighter">
+                                                <span>{progress?.current ?? 0} files</span>
+                                                <span>of {progress?.total ?? '...'}</span>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
 
                                 <div className="mt-auto">
                                     <button
                                         disabled={isAdapting}
-                                        onClick={() => handleLaunch(site.path)}
-                                        className={`w-full py-3 rounded-2xl text-sm font-bold transition-all border flex items-center justify-center gap-2 group/btn shadow-lg disabled:opacity-50 disabled:cursor-not-allowed ${isProcessed
+                                        onClick={() => isRunning ? handleStop() : handleLaunch(site.path)}
+                                        className={`w-full py-3 rounded-2xl text-sm font-bold transition-all border flex items-center justify-center gap-2 group/btn shadow-lg disabled:opacity-50 disabled:cursor-not-allowed ${isRunning
+                                            ? 'bg-red-500/10 border-red-500/30 text-red-500 hover:bg-red-500 hover:text-white hover:border-red-500'
+                                            : isProcessed
                                                 ? 'bg-neon-green/10 border-neon-green/30 text-neon-green hover:bg-neon-green hover:text-white hover:border-neon-green shadow-neon-green/5'
                                                 : 'bg-neon-cyan/10 border-neon-cyan/20 text-neon-cyan hover:bg-neon-cyan hover:text-white hover:border-neon-cyan shadow-neon-cyan/5'
                                             }`}
                                     >
-                                        <span>{isAdapting ? '⏳' : '🚀'}</span> {isAdapting ? t('processing') : t('launch')}
+                                        <span>{isAdapting ? '⏳' : isRunning ? '⏹️' : '🚀'}</span> {isAdapting ? t('processing') : isRunning ? t('close') : t('launch')}
                                     </button>
                                 </div>
 
-                                {isProcessed && !isAdapting && (
+                                {isRunning ? (
+                                    <div className="absolute -top-1 -left-1 px-3 py-1 rounded-full bg-red-500 text-white font-black text-[9px] uppercase tracking-tighter shadow-[0_0_15px_rgba(239,68,68,0.4)] z-10 border border-white/10 flex items-center gap-1">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
+                                        {t('status_running')}
+                                    </div>
+                                ) : isProcessed && !isAdapting && (
                                     <div className="absolute -top-1 -left-1 px-3 py-1 rounded-full bg-neon-green text-black font-black text-[9px] uppercase tracking-tighter shadow-[0_0_15px_rgba(34,197,94,0.4)] z-10 border border-white/10">
                                         {t('status_adapted')}
                                     </div>
