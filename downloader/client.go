@@ -13,10 +13,11 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"path"
+    "path/filepath"
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/spf13/viper"
 	"golang.org/x/net/html"
 )
+
 
 const (
 	DefaultWorkers     = 5 // Снижаем с 10 до 5 для экономии памяти
@@ -426,163 +428,118 @@ func (s *DirectoryIndexStrategy) GetSavePath(outputDir string, urlStr string, co
 }
 
 func (s *DirectoryIndexStrategy) RewriteLink(originalURL, baseURL string) string {
-	parsed, err1 := url.Parse(originalURL)
-	baseParsed, err2 := url.Parse(baseURL)
+    parsed, err1 := url.Parse(originalURL)
+    baseParsed, err2 := url.Parse(baseURL)
 
-	if err1 != nil || err2 != nil {
-		return originalURL
-	}
+    if err1 != nil || err2 != nil {
+        return originalURL
+    }
 
-	// Пропускаем внешние ссылки и специальные протоколы
-	if parsed.Host != "" && parsed.Host != baseParsed.Host {
-		return originalURL
-	}
+    // Пропускаем внешние ссылки и специальные протоколы
+    if parsed.Host != "" && parsed.Host != baseParsed.Host {
+        return originalURL
+    }
 
-	if strings.HasPrefix(originalURL, "#") ||
-		strings.HasPrefix(originalURL, "javascript:") ||
-		strings.HasPrefix(originalURL, "mailto:") ||
-		strings.HasPrefix(originalURL, "tel:") ||
-		strings.HasPrefix(originalURL, "data:") {
-		return originalURL
-	}
+    if strings.HasPrefix(originalURL, "#") ||
+        strings.HasPrefix(originalURL, "javascript:") ||
+        strings.HasPrefix(originalURL, "mailto:") ||
+        strings.HasPrefix(originalURL, "tel:") ||
+        strings.HasPrefix(originalURL, "data:") {
+        return originalURL
+    }
 
-	// Получаем пути
-	sourcePath := baseParsed.Path
-	targetPath := parsed.Path
+    // ВАЖНО: calculateRelativePath теперь вызывается для ПОЛНЫХ URL
+    // Это позволит функции внутри понимать, где файлы лежат на диске.
 
-	// Если пути одинаковые или целевой путь пустой
-	if targetPath == "" || targetPath == "/" {
-		parsed.Path = "/"
-		return parsed.String()
-	}
+    // Формируем абсолютный URL для цели, если он относительный
+    targetURL := originalURL
+    if !strings.HasPrefix(originalURL, "http") {
+        resolved := baseParsed.ResolveReference(parsed)
+        targetURL = resolved.String()
+    }
 
-	// Обрабатываем относительные пути
-	if !strings.HasPrefix(targetPath, "/") {
-		// Относительный путь - оставляем как есть
-		return originalURL
-	}
+    // 1. Вычисляем относительный путь
+    relPath, err := calculateRelativePath(baseURL, targetURL)
+    if err != nil {
+        return originalURL
+    }
 
-	// Преобразуем расширения страниц
-	lowerTarget := strings.ToLower(targetPath)
-	pageExtensions := []string{".php", ".html", ".htm", ".asp", ".aspx", ".jsp"}
+    // 2. Дополнительная логика для DirectoryIndex (убираем .html/index.html из ссылок)
+    // Чтобы ссылки в браузере выглядели как href="../assets/" вместо "../assets/index.html"
 
-	for _, ext := range pageExtensions {
-		if strings.HasSuffix(lowerTarget, ext) {
-			// Убираем расширение
-			newPath := strings.TrimSuffix(targetPath, ext)
+    // Убираем "index.html" из конца, если он там есть
+    if strings.HasSuffix(relPath, "index.html") {
+        relPath = strings.TrimSuffix(relPath, "index.html")
+    }
 
-			// Обработка index страниц
-			if strings.HasSuffix(strings.ToLower(newPath), "/index") {
-				newPath = strings.TrimSuffix(newPath, "/index")
-			} else if strings.EqualFold(newPath, "index") {
-				newPath = "/"
-			}
+    // Если путь стал пустым (ссылка на ту же папку), ставим "./"
+    if relPath == "" {
+        relPath = "./"
+    }
 
-			if newPath == "" {
-				newPath = "/"
-			}
+    // Сохраняем только путь, сохраняя Query-параметры (?v=1.2), если они были
+    parsed.Path = relPath
+    parsed.Scheme = "" // Делаем ссылку относительной
+    parsed.Host = ""
 
-			// Теперь вычисляем относительный путь от sourcePath к newPath
-			if sourcePath != "/" && newPath != "/" {
-				relativePath := calculateRelativePath(sourcePath, newPath)
-				if relativePath != "" {
-					parsed.Path = relativePath
-					return parsed.String()
-				}
-			}
-
-			parsed.Path = newPath
-			return parsed.String()
-		}
-	}
-
-	// Для путей без расширения тоже вычисляем относительный путь
-	if !strings.Contains(targetPath, ".") {
-		// Обеспечиваем, что для DirectoryIndexStrategy путь к папке заканчивается на /
-		normalizedTargetPath := targetPath
-		if !strings.HasSuffix(normalizedTargetPath, "/") {
-			normalizedTargetPath += "/"
-		}
-
-		relativePath := calculateRelativePath(sourcePath, normalizedTargetPath)
-		if relativePath != "" && relativePath != targetPath {
-			parsed.Path = relativePath
-			return parsed.String()
-		}
-	} else {
-		// ДЛЯ ФАЙЛОВ (css, js, images)
-		// Тоже делаем их относительными, но БЕЗ добавления /
-		relativePath := calculateRelativePath(sourcePath, targetPath)
-		if relativePath != "" {
-			parsed.Path = relativePath
-			return parsed.String()
-		}
-	}
-
-	return originalURL
+    return parsed.String()
 }
 
-// Вспомогательная функция для вычисления относительного пути
-func calculateRelativePath(fromPath, toPath string) string {
-	// Нормализуем пути (fromPath всегда директория в нашем контексте)
-	if fromPath == "" || fromPath == "/" {
-		fromPath = "/"
-	} else if !strings.HasSuffix(fromPath, "/") {
-		fromPath += "/"
-	}
+// Функция для вычисления относительного пути между двумя URL
+func calculateRelativePath(sourceURL, targetURL string) (string, error) {
+    s, err := url.Parse(sourceURL)
+    t, err := url.Parse(targetURL)
+    if err != nil {
+        return targetURL, err
+    }
 
-	if toPath == "" || toPath == "/" {
-		toPath = "/"
-	}
+    // Если домены разные, оставляем абсолютную ссылку
+    if s.Host != t.Host {
+        return targetURL, nil
+    }
 
-	// Запоминаем, был ли слэш в конце целевого пути, чтобы сохранить его
-	// Это критично для отличия файлов от папок в браузере.
-	hasTrailingSlash := strings.HasSuffix(toPath, "/") && toPath != "/"
+    // Определяем "пути" на диске для обоих файлов
+    sourcePath := getDiskPath(s)
+    targetPath := getDiskPath(t)
 
-	// Разбиваем пути на части
-	fromParts := strings.Split(strings.Trim(fromPath, "/"), "/")
-	toParts := strings.Split(strings.Trim(toPath, "/"), "/")
+    // Вычисляем относительный путь из папки источника к файлу цели
+    rel, err := filepath.Rel(filepath.Dir(sourcePath), targetPath)
+    if err != nil {
+        return targetURL, err
+    }
 
-	// ... (Находим общую часть)
-	common := 0
-	for i := 0; i < len(fromParts) && i < len(toParts); i++ {
-		if fromParts[i] == toParts[i] {
-			common++
-		} else {
-			break
-		}
-	}
+    // Превращаем системные разделители (\ в Windows) в URL-разделители (/)
+    return filepath.ToSlash(rel), nil
+}
 
-	// Строим относительный путь
-	var result strings.Builder
+// Вспомогательная функция, которая повторяет логику SaveFileV2
+func getDiskPath(u *url.URL) string {
+    p := u.Path
+    if p == "" || p == "/" {
+        return "index.html"
+    }
 
-	// Добавляем переходы наверх из fromPath
-	for i := common; i < len(fromParts); i++ {
-		if result.Len() > 0 {
-			result.WriteString("/")
-		}
-		result.WriteString("..")
-	}
+    // Очищаем путь от двойных слэшей и лишних элементов
+    p = path.Clean(p)
+    if p == "." {
+        return "index.html"
+    }
 
-	// Добавляем оставшуюся часть toPath
-	for i := common; i < len(toParts); i++ {
-		if result.Len() > 0 {
-			result.WriteString("/")
-		}
-		result.WriteString(toParts[i])
-	}
+    // Убираем начальный слэш, чтобы filepath.Join не считал путь абсолютным
+    p = strings.TrimPrefix(p, "/")
 
-	resStr := result.String()
-	if resStr == "" {
-		resStr = "./"
-	}
+    // Если это папка (URL заканчивается на /) или страница без расширения
+    // проверяем наличие точки в последнем сегменте пути
+    lastSegment := path.Base(p)
+    if strings.HasSuffix(u.Path, "/") || !strings.Contains(lastSegment, ".") {
+        // Если это php, превращаем в html, иначе делаем index.html внутри папки
+        if strings.HasSuffix(strings.ToLower(p), ".php") {
+            return strings.TrimSuffix(p, ".php") + ".html"
+        }
+        return path.Join(p, "index.html")
+    }
 
-	// Если в конце был слэш — возвращаем его
-	if hasTrailingSlash && !strings.HasSuffix(resStr, "/") {
-		resStr += "/"
-	}
-
-	return resStr
+    return p
 }
 
 // FileOnlyStrategy - стратегия "просто файл" для ресурсов
@@ -752,35 +709,46 @@ type DefaultURLFilter struct {
 }
 
 func (f *DefaultURLFilter) ShouldDownload(u string) bool {
-	parsed, err := url.Parse(u)
-	if err != nil {
-		return false
-	}
-	if parsed.Host != f.domain {
-		return false
-	}
+    parsed, err := url.Parse(u)
+    if err != nil {
+        return false
+    }
 
-	pathNoQ := strings.Split(parsed.Path, "?")[0]
+    // 1. Проверка домена (не скачиваем внешние сайты)
+    if parsed.Host != f.domain {
+        return false
+    }
 
-	// Разрешаем файлы внутри BasePath
-	if strings.HasPrefix(pathNoQ, f.basePath) {
-		return true
-	}
+    pathLower := strings.ToLower(parsed.Path)
 
-	// Разрешаем ресурсы из любых путей
-	exts := []string{".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".ttf", ".webp", ".woff2"}
-	for _, e := range exts {
-		if strings.HasSuffix(strings.ToLower(parsed.Path), e) {
-			return true
-		}
-	}
+    // 2. Список расширений статических ресурсов (ассетов)
+    assetExts := []string{
+        ".css", ".js", ".mjs", ".json", ".map",
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".mp4", ".webm", ".mp3", ".wav", ".pdf",
+    }
 
-	// Разрешаем .php файлы из любых путей (для корректного скачивания)
-	if strings.HasSuffix(strings.ToLower(parsed.Path), ".php") {
-		return true
-	}
+    // Если это статический ассет — разрешаем скачивание из любого места на этом домене
+    for _, ext := range assetExts {
+        if strings.HasSuffix(pathLower, ext) {
+            return true
+        }
+    }
 
-	return false
+    // 3. Проверка для страниц (HTML, PHP или URL без расширения)
+    // Разрешаем, только если они находятся внутри базовой папки (basePath)
+    isPage := strings.HasSuffix(pathLower, ".html") ||
+              strings.HasSuffix(pathLower, ".php") ||
+              !strings.Contains(filepath.Base(pathLower), ".")
+
+    if isPage {
+        return strings.HasPrefix(parsed.Path, f.basePath)
+    }
+
+    // По умолчанию разрешаем всё остальное, что не попало в фильтр страниц,
+    // но находится на нашем домене (на всякий случай)
+    return true
 }
 
 func (f *DefaultURLFilter) FilterReason(u string) string {
@@ -855,34 +823,28 @@ func (h *LinkRewriterHandlerV2) Handle(content []byte, meta FileMetadata) ([]byt
 	return buf.Bytes(), nil
 }
 
-// SaveFileV2 - универсальная функция сохранения с выбором стратегии
-func SaveFileV2(outputDir, originalURL string, content []byte, ct string) (string, error) {
-	analyzer := NewStrategyAnalyzer()
-	strategy := analyzer.Analyze(originalURL, ct, content)
+func SaveFileV2(outputDir string, urlStr string, data []byte, contentType string) (string, error) {
+    parsed, err := url.Parse(urlStr)
+    if err != nil || parsed.Host == "" {
+        return "", fmt.Errorf("invalid URL or empty host")
+    }
 
-	// Получаем путь и имя файла от стратегии
-	saveDir, fileName := strategy.GetSavePath(outputDir, originalURL, ct)
-	if saveDir == "" || fileName == "" {
-		return "", fmt.Errorf("failed to get save path for %s", originalURL)
-	}
+    // Получаем путь внутри домена
+    relDiskPath := getDiskPath(parsed)
 
-	// Создаем директорию
-	if err := os.MkdirAll(saveDir, 0755); err != nil {
-		log.Printf("Mkdir error %s: %v", saveDir, err)
-		return "", err
-	}
+    // Собираем: output/wails.io/ru/index.html
+    fullPath := filepath.Join(outputDir, parsed.Host, relDiskPath)
 
-	// Полный путь к файлу
-	fullPath := filepath.Join(saveDir, fileName)
+    if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+        return "", err
+    }
 
-	// Сохраняем файл
-	if err := ioutil.WriteFile(fullPath, content, 0644); err != nil {
-		log.Printf("Write error %s: %v", fullPath, err)
-		return "", err
-	}
+    err = os.WriteFile(fullPath, data, 0644)
+    if err != nil {
+        return "", err
+    }
 
-	log.Printf("✅ Saved [%T]: %s → %s", strategy, originalURL, fullPath)
-	return fullPath, nil
+    return relDiskPath, nil
 }
 func NormalizeURL(u string) (string, error) {
 	pu, err := url.Parse(u)
@@ -1218,128 +1180,117 @@ func (j *Job) worker() {
 }
 
 func (j *Job) processURL(urlStr string) {
-	j.mu.Lock()
-	depth := j.depths[urlStr]
-	j.mu.Unlock()
+    j.mu.Lock()
+    depth := j.depths[urlStr]
+    j.mu.Unlock()
 
-	j.sendLog(fmt.Sprintf("[Info] Processing: %s (depth %d)", urlStr, depth), false)
+    // Проверяем, что URL валидный перед скачиванием
+    if !strings.HasPrefix(urlStr, "http") {
+        j.sendLog(fmt.Sprintf("[Error] Invalid URL format: %s", urlStr), false)
+        return
+    }
 
-	if depth > j.Config.MaxDepth {
-		atomic.AddInt64(&j.stats.Skipped, 1)
-		j.sendLog(fmt.Sprintf("[Skip] Max depth reached: %s", urlStr), false)
-		return
-	}
+    j.sendLog(fmt.Sprintf("[Info] Processing: %s (depth %d)", urlStr, depth), false)
 
-	// Скачиваем файл - БЕЗ изменений URL!
-	content, contentType, err := j.Downloader.Download(j.ctx, urlStr)
-	if err != nil {
-		j.sendLog(fmt.Sprintf("[Error] Failed to download %s: %v", urlStr, err), false)
-		atomic.AddInt64(&j.stats.Failed, 1)
-		return
-	}
+    if depth > j.Config.MaxDepth {
+        atomic.AddInt64(&j.stats.Skipped, 1)
+        return
+    }
 
-	// Проверяем дубликаты по хешу
-	hash := ContentHash(content)
-	j.mu.Lock()
-	if j.hashes[hash] {
-		j.mu.Unlock()
-		atomic.AddInt64(&j.stats.Skipped, 1)
-		j.sendLog(fmt.Sprintf("[Skip] Duplicate content: %s", urlStr), false)
-		return
-	}
-	j.hashes[hash] = true
-	j.mu.Unlock()
+    content, contentType, err := j.Downloader.Download(j.ctx, urlStr)
+    if err != nil {
+        j.sendLog(fmt.Sprintf("[Error] Failed to download %s: %v", urlStr, err), false)
+        atomic.AddInt64(&j.stats.Failed, 1)
+        return
+    }
 
-	// Метаданные файла
-	meta := FileMetadata{
-		URL:         urlStr,
-		ContentType: contentType,
-		Hash:        hash,
-		Depth:       depth,
-	}
+    // Хеши отключены, как мы и договаривались, чтобы сохранить структуру /ru/assets/
+    hash := ContentHash(content)
 
-	// Переписываем ссылки в контенте для локального просмотра
-	modifiedContent := content
-	for _, handler := range j.sortedHandlers() {
-		modified, err := handler.Handle(modifiedContent, meta)
-		if err != nil {
-			log.Printf("Handler error for %s: %v", urlStr, err)
-		} else {
-			modifiedContent = modified
-		}
-	}
+    meta := FileMetadata{
+        URL:         urlStr,
+        ContentType: contentType,
+        Hash:        hash,
+        Depth:       depth,
+    }
 
-	_, err = SaveFileV2(j.Config.OutputDir, urlStr, modifiedContent, contentType)
-	if err != nil {
-		j.sendLog(fmt.Sprintf("[Error] Save failed for %s: %v", urlStr, err), false)
-		atomic.AddInt64(&j.stats.Failed, 1)
-		return
-	}
+    modifiedContent := content
+    for _, handler := range j.sortedHandlers() {
+        modified, err := handler.Handle(modifiedContent, meta)
+        if err != nil {
+            log.Printf("Handler error for %s: %v", urlStr, err)
+        } else {
+            modifiedContent = modified
+        }
+    }
 
-	// Обновляем статистику
-	atomic.AddInt64(&j.stats.TotalFiles, 1)
-	atomic.AddInt64(&j.stats.DownloadedBytes, int64(len(content)))
+    // Сохраняем файл
+    _, err = SaveFileV2(j.Config.OutputDir, urlStr, modifiedContent, contentType)
+    if err != nil {
+        j.sendLog(fmt.Sprintf("[Error] Save failed for %s: %v", urlStr, err), false)
+        atomic.AddInt64(&j.stats.Failed, 1)
+        return
+    }
 
-	j.mu.Lock()
-	j.stats.FileTypes[contentType]++
-	j.mu.Unlock()
+    atomic.AddInt64(&j.stats.TotalFiles, 1)
+    atomic.AddInt64(&j.stats.DownloadedBytes, int64(len(content)))
+    j.sendLog(fmt.Sprintf("[Done] Saved: %s", urlStr), false)
 
-	j.sendLog(fmt.Sprintf("[Done] Saved: %s", urlStr), false)
-
-	// Парсим ссылки для дальнейшего скачивания (используем оригинальный контент!)
-	if depth < j.Config.MaxDepth {
-		j.parseAndQueueLinks(content, contentType, urlStr, depth)
-	}
+    if depth < j.Config.MaxDepth {
+        j.parseAndQueueLinks(content, contentType, urlStr, depth)
+    }
 }
 
 func (j *Job) parseAndQueueLinks(content []byte, contentType, baseURL string, depth int) {
-	for _, parser := range j.Parsers {
-		if parser.CanParse(contentType) {
-			rawLinks, err := parser.Parse(content, baseURL)
-			if err != nil {
-				log.Printf("Parse error for %s: %v", baseURL, err)
-				continue
-			}
+    for _, parser := range j.Parsers {
+        if parser.CanParse(contentType) {
+            rawLinks, err := parser.Parse(content, baseURL)
+            if err != nil {
+                log.Printf("Parse error for %s: %v", baseURL, err)
+                continue
+            }
 
-			log.Printf("Found %d raw links in %s", len(rawLinks), baseURL)
+            log.Printf("Found %d raw links in %s", len(rawLinks), baseURL)
 
-			for _, rawLink := range rawLinks {
-				// Нормализуем URL (сохраняем оригинальные расширения)
-				normalized, err := NormalizeURL(rawLink)
-				if err != nil {
-					continue
-				}
+            for _, rawLink := range rawLinks {
+                normalized, err := NormalizeURL(rawLink)
+                if err != nil {
+                    continue
+                }
 
-				// Проверяем фильтры
-				if !j.Filter.ShouldDownload(normalized) {
-					reason := j.Filter.FilterReason(normalized)
-					log.Printf("Filtered out: %s (%s)", normalized, reason)
-					atomic.AddInt64(&j.stats.Skipped, 1)
-					continue
-				}
+                // Проверяем фильтры
+                if !j.Filter.ShouldDownload(normalized) {
+                    // Можно раскомментировать для отладки фильтрации:
+                    // reason := j.Filter.FilterReason(normalized)
+                    // log.Printf("Filtered out: %s (%s)", normalized, reason)
+                    continue
+                }
 
-				// Добавляем в очередь
-				j.mu.Lock()
-				if !j.visited[normalized] {
-					j.visited[normalized] = true
-					j.depths[normalized] = depth + 1
+                j.mu.Lock()
+                if !j.visited[normalized] {
+                    j.visited[normalized] = true
+                    j.depths[normalized] = depth + 1
 
-					select {
-					case j.pending <- normalized:
-						j.activeWG.Add(1) // Увеличиваем счетчик только если успешно добавили в очередь
-						log.Printf("Enqueued: %s (depth %d)", normalized, depth+1)
-					default:
-						// Если канал полон или уже закрыт, мы не добавляем в WaitGroup.
-						// Нет нужды в j.activeWG.Done(), так как j.activeWG.Add(1) не вызывался.
-						log.Printf("Queue full or closed, dropping: %s", normalized)
-					}
-				}
-				j.mu.Unlock()
-			}
+                    // Увеличиваем счетчик ДО разблокировки и отправки
+                    j.activeWG.Add(1)
+                    j.mu.Unlock()
 
-			break // Обработали первый подходящий парсер
-		}
-	}
+                    // Отправляем в очередь. Если канал полон — ждем.
+                    select {
+                    case j.pending <- normalized:
+                        // Успешно добавлено
+                    case <-j.ctx.Done():
+                        // Если программа завершается, откатываем счетчик
+                        j.activeWG.Done()
+                        return
+                    }
+                } else {
+                    j.mu.Unlock()
+                }
+            }
+            break // Используем только первый подходящий парсер
+        }
+    }
 }
 
 func (j *Job) sortedHandlers() []ContentHandler {

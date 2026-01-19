@@ -121,57 +121,65 @@ func (a *App) AnalyzeScripts(path string) []string {
 
 // AdaptPaths runs the post-processor with optional script removal
 func (a *App) AdaptPaths(path string, scriptsToRemove []string) string {
-	normalized := filepath.ToSlash(path)
-	if _, busy := a.activeJobs.LoadOrStore(normalized, true); busy {
-		return "Job already in progress"
-	}
+    normalized := filepath.ToSlash(path)
+    if _, busy := a.activeJobs.LoadOrStore(normalized, true); busy {
+        return "Job already in progress"
+    }
 
-	host := a.extractHostFromPath(path)
+    host := a.extractHostFromPath(path)
 
-	go func() {
-		defer a.activeJobs.Delete(normalized)
-		runtime.EventsEmit(a.ctx, "adapting:start", normalized)
-		runtime.EventsEmit(a.ctx, "download:log", fmt.Sprintf("[System] Starting path adaptation for %s...", host))
+    go func() {
+        defer a.activeJobs.Delete(normalized)
+        runtime.EventsEmit(a.ctx, "adapting:start", normalized)
+        runtime.EventsEmit(a.ctx, "download:log", fmt.Sprintf("[System] Starting path adaptation for %s...", host))
 
-		sourceDir := strings.TrimSuffix(path, "_processed")
-		processedDir := sourceDir + "_processed"
+        sourceDir := strings.TrimSuffix(path, "_processed")
+        processedDir := sourceDir + "_processed"
 
-		if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
-			runtime.EventsEmit(a.ctx, "download:log", "[Error] Source directory not found: "+sourceDir)
-			runtime.EventsEmit(a.ctx, "adapting:done", normalized)
-			return
-		}
+        // 1. Получаем абсолютный путь к папке (важно для корректных Rel путей)
+        absSourceDir, _ := filepath.Abs(sourceDir)
 
-		os.RemoveAll(processedDir)
+        if _, err := os.Stat(absSourceDir); os.IsNotExist(err) {
+            runtime.EventsEmit(a.ctx, "download:log", "[Error] Source directory not found: "+absSourceDir)
+            runtime.EventsEmit(a.ctx, "adapting:done", normalized)
+            return
+        }
 
-		p := proccesor.NewProcessor(host)
-		p.OnLog = func(msg string) {
-			msg = stripAnsi(msg)
-			if msg != "" {
-				if strings.Contains(msg, "[ANALYZING]") {
-					runtime.EventsEmit(a.ctx, "adaptation:analyzing", normalized)
-				}
-				runtime.EventsEmit(a.ctx, "download:log", "[Processor] "+msg)
-				processed := atomic.LoadInt64(&p.Stats.FilesProcessed)
-				total := p.Stats.TotalFiles
-				if total > 0 {
-					runtime.EventsEmit(a.ctx, "adaptation:progress", map[string]interface{}{
-						"path":    normalized,
-						"current": processed,
-						"total":   total,
-					})
-				}
-			}
-		}
+        // Удаляем старую папку _processed если она была
+        os.RemoveAll(processedDir)
 
-		p.Process(sourceDir, scriptsToRemove)
+        // 2. СНАЧАЛА создаем процессор
+        p := proccesor.NewProcessor(host)
 
-		runtime.EventsEmit(a.ctx, "download:log", "[System] Adaptation sequence finished.")
-		runtime.EventsEmit(a.ctx, "adapting:done", normalized)
-		runtime.EventsEmit(a.ctx, "library:refresh", "DONE")
-	}()
+        // 3. Настраиваем логирование
+        p.OnLog = func(msg string) {
+            msg = stripAnsi(msg)
+            if msg != "" {
+                if strings.Contains(msg, "[ANALYZING]") {
+                    runtime.EventsEmit(a.ctx, "adaptation:analyzing", normalized)
+                }
+                runtime.EventsEmit(a.ctx, "download:log", "[Processor] "+msg)
+                processed := atomic.LoadInt64(&p.Stats.FilesProcessed)
+                total := p.Stats.TotalFiles
+                if total > 0 {
+                    runtime.EventsEmit(a.ctx, "adaptation:progress", map[string]interface{}{
+                        "path":    normalized,
+                        "current": processed,
+                        "total":   total,
+                    })
+                }
+            }
+        }
 
-	return "Adaptation started"
+        // 4. ТЕПЕРЬ запускаем процесс (передаем абсолютный путь)
+        p.Process(absSourceDir, scriptsToRemove)
+
+        runtime.EventsEmit(a.ctx, "download:log", "[System] Adaptation sequence finished.")
+        runtime.EventsEmit(a.ctx, "adapting:done", normalized)
+        runtime.EventsEmit(a.ctx, "library:refresh", "DONE")
+    }()
+
+    return "Adaptation started"
 }
 
 func stripAnsi(msg string) string {

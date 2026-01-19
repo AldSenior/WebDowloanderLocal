@@ -123,7 +123,6 @@ func (p *Processor) Process(sourceDir string, scriptsToRemove []string) {
 	p.log("[START] Обработка: %s -> %s\n", p.cfg.Dir, p.cfg.OutputDir)
 
 	// Pre-scan for progress
-	p.log("[ANALYZING] Подсчет файлов для прогресса...")
 	var total int64
 	filepath.WalkDir(sourceDir, func(_ string, d os.DirEntry, _ error) error {
 		if !d.IsDir() {
@@ -219,26 +218,19 @@ func (p *Processor) resolveTargetPath(currentFile, rawURL string) (string, bool)
 	relBaseSlash := filepath.ToSlash(relBase)
 
 	// 4. УМНЫЙ ПОИСК (Локальный vs Абсолютный)
-	// Если ссылка уже относительная (не начинается с /) — она уже в контексте файла
-	isOriginallyRelative := !strings.HasPrefix(targetPath, "/")
+	// Проверяем, существует ли цель прямо в текущей папке на диске
+	checkPathLocal := filepath.Join(filepath.Dir(currentFile), pureName)
+	_, errLocal := os.Stat(checkPathLocal)
+	if errLocal != nil {
+		_, errLocal = os.Stat(checkPathLocal + ".html")
+	}
 
 	resolvedPath := targetPath
-	if !isOriginallyRelative {
-		// Для абсолютных ссылок от корня (/...)
-		// Проверяем, существует ли цель на диске относительно корня проекта
-		pureName = strings.TrimPrefix(targetPath, "/")
-		resolvedPath = pureName
-	} else {
-		// Для относительных ссылок (../ или просто name)
-		// Превращаем их в пути от корня, чтобы унифицировать дальнейшую обработку
-		// Но только если они не начинаются с ./ или ../ (которые мы оставим как есть до этапа 8)
-		if !strings.HasPrefix(targetPath, ".") {
-			resolvedPath = path.Join(relBaseSlash, targetPath)
-		} else {
-			// Это уже относительный путь типа ../, пропускаем JOIN и идем к нормализации
-			// Но для нормализации (шаг 5) нам нужен путь от корня
-			resolvedPath = path.Join(relBaseSlash, targetPath)
-		}
+	// Если ссылка относительная (нет / в начале) ИЛИ мы нашли файл локально — склеиваем с текущей папкой
+	isActuallyRelative := !strings.HasPrefix(targetPath, "/") || errLocal == nil
+
+	if isActuallyRelative && relBaseSlash != "." {
+		resolvedPath = path.Join(relBaseSlash, pureName)
 	}
 
 	// 5. НОРМАЛИЗАЦИЯ
