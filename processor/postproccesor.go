@@ -1,7 +1,6 @@
 package proccesor
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -63,38 +62,49 @@ const (
 )
 
 func (p *Processor) AnalyzeScripts(dir string) []string {
-	var scripts []string
-	seen := make(map[string]bool)
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			ext := strings.ToLower(filepath.Ext(path))
-			if ext == ".html" || ext == ".php" || ext == ".htm" {
-				b, _ := ioutil.ReadFile(path)
-				doc, _ := html.Parse(bytes.NewReader(b))
-				var f func(*html.Node)
-				f = func(n *html.Node) {
-					if n.Type == html.ElementNode && n.Data == "script" {
-						src := ""
-						for _, a := range n.Attr {
-							if a.Key == "src" {
-								src = a.Val
-							}
-						}
-						if src != "" && !seen[src] {
-							scripts = append(scripts, src)
-							seen[src] = true
-						}
-					}
-					for c := n.FirstChild; c != nil; c = c.NextSibling {
-						f(c)
-					}
-				}
-				f(doc)
-			}
-		}
-		return nil
-	})
-	return scripts
+    var scripts []string
+    seen := make(map[string]bool)
+
+    filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+        if err != nil || info.IsDir() {
+            return nil
+        }
+
+        ext := strings.ToLower(filepath.Ext(path))
+        if ext == ".html" || ext == ".php" || ext == ".htm" {
+            // ОТКРЫВАЕМ ФАЙЛ КАК ПОТОК
+            f, err := os.Open(path)
+            if err != nil {
+                return nil
+            }
+            defer f.Close() // Гарантированно закрываем дескриптор
+
+            doc, err := html.Parse(f)
+            if err != nil {
+                return nil
+            }
+
+            var findTags func(*html.Node)
+            findTags = func(n *html.Node) {
+                if n.Type == html.ElementNode && n.Data == "script" {
+                    for _, a := range n.Attr {
+                        if a.Key == "src" && a.Val != "" {
+                            if !seen[a.Val] {
+                                scripts = append(scripts, a.Val)
+                                seen[a.Val] = true
+                            }
+                        }
+                    }
+                }
+                for c := n.FirstChild; c != nil; c = c.NextSibling {
+                    findTags(c)
+                }
+            }
+            findTags(doc)
+        }
+        return nil
+    })
+    return scripts
 }
 
 // ЭТОТ МЕТОД НУЖЕН GUI
@@ -330,58 +340,65 @@ func (p *Processor) walkAndProcess(sourceDir string) {
 }
 
 func (p *Processor) processHTML(src, dst string) (bool, error) {
-	b, err := ioutil.ReadFile(src)
-	if err != nil {
-		return false, err
-	}
-	doc, err := html.Parse(bytes.NewReader(b))
-	if err != nil {
-		return false, err
-	}
+    // 1. Открываем исходный файл
+    fIn, err := os.Open(src)
+    if err != nil {
+        return false, err
+    }
+    defer fIn.Close()
 
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode {
-			// Удаление скриптов если нужно
-			if n.Data == "script" && len(p.cfg.ScriptsToRemove) > 0 {
-				src := ""
-				for _, a := range n.Attr {
-					if a.Key == "src" {
-						src = a.Val
-					}
-				}
-				for _, pattern := range p.cfg.ScriptsToRemove {
-					if strings.Contains(src, pattern) || (src == "" && pattern == "inline") {
-						// Удаляем узел (заменяем на комментарий или просто удаляем)
-						// В net/html удаление узла сложнее, мы просто изменим его данные на пустые комментарии
-						// или пометим для игнорирования. Но проще всего изменить тип на Comment.
-						n.Type = html.CommentNode
-						n.Data = " [SiteCloner: Script Removed] "
-						n.Attr = nil
-						return // Не идем вглубь удаленного узла
-					}
-				}
-			}
+    // 2. Парсим напрямую из файла
+    doc, err := html.Parse(fIn)
+    if err != nil {
+        return false, err
+    }
 
-			for i, a := range n.Attr {
-				if isLinkAttr(n.Data, a.Key) || (a.Key == "content" && isMetaURL(n)) {
-					newURL, ok := p.resolveTargetPath(src, a.Val)
-					if ok && newURL != a.Val {
-						n.Attr[i].Val = newURL
-						atomic.AddInt64(&p.Stats.LinksRewritten, 1)
-					}
-				}
-			}
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
-		}
-	}
-	f(doc)
+    // Рекурсивная функция обработки (ссылки и удаление скриптов)
+    var transform func(*html.Node)
+    transform = func(n *html.Node) {
+        if n.Type == html.ElementNode {
+            // Логика удаления скриптов
+            if n.Data == "script" && len(p.cfg.ScriptsToRemove) > 0 {
+                srcAttr := ""
+                for _, a := range n.Attr {
+                    if a.Key == "src" { srcAttr = a.Val }
+                }
+                for _, pattern := range p.cfg.ScriptsToRemove {
+                    if strings.Contains(srcAttr, pattern) || (srcAttr == "" && pattern == "inline") {
+                        n.Type = html.CommentNode
+                        n.Data = " [Removed Script] "
+                        n.Attr = nil
+                        return
+                    }
+                }
+            }
 
-	var buf bytes.Buffer
-	html.Render(&buf, doc)
-	return true, ioutil.WriteFile(dst, buf.Bytes(), 0644)
+            // Логика исправления ссылок
+            for i, a := range n.Attr {
+                if isLinkAttr(n.Data, a.Key) || (a.Key == "content" && isMetaURL(n)) {
+                    newURL, ok := p.resolveTargetPath(src, a.Val)
+                    if ok && newURL != a.Val {
+                        n.Attr[i].Val = newURL
+                        atomic.AddInt64(&p.Stats.LinksRewritten, 1)
+                    }
+                }
+            }
+        }
+        for c := n.FirstChild; c != nil; c = c.NextSibling {
+            transform(c)
+        }
+    }
+    transform(doc)
+
+    // 3. Сохраняем результат
+    fOut, err := os.Create(dst)
+    if err != nil {
+        return false, err
+    }
+    defer fOut.Close()
+
+    err = html.Render(fOut, doc)
+    return true, err
 }
 
 func (p *Processor) processCSS(src, dst string) (bool, error) {

@@ -55,21 +55,7 @@ const SiteCard = React.memo(
     onAdapt,
     onOpenFolder,
     onDelete,
-  }: {
-    site: Site;
-    index: number;
-    progress: Progress | undefined;
-    isAdapting: boolean;
-    isAnalyzing: boolean;
-    isRunning: boolean;
-    t: any;
-    onLaunch: (p: string) => void;
-    onStop: () => void;
-    onAnalyze: (p: string, n: string) => void;
-    onAdapt: (p: string, n: string) => void;
-    onOpenFolder: (p: string) => void;
-    onDelete: (p: string, n: string) => void;
-  }) => {
+  }: any) => {
     const isProcessed = site.path.endsWith("_processed");
     const displayName = site.domain || site.name;
     const percent = progress
@@ -79,23 +65,23 @@ const SiteCard = React.memo(
     return (
       <div
         style={{ animationDelay: `${index * 40}ms` }}
-        className="group relative bg-graphite-800/40 backdrop-blur-xl border border-white/5 rounded-3xl p-6 hover:bg-graphite-700/60 transition-all hover:-translate-y-2 hover:shadow-[0_20px_60px_rgba(0,0,0,0.6)] hover:border-white/10 animate-toast-in overflow-visible"
+        className="group relative bg-graphite-800/40 backdrop-blur-xl border border-white/5 rounded-3xl p-6 hover:bg-graphite-700/60 transition-all hover:-translate-y-2 hover:shadow-[0_20px_60px_rgba(0,0,0,0.6)] animate-toast-in"
       >
-        {/* Кнопки управления в углу */}
+        {/* Top Control Overlay */}
         <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 z-20">
           {!isProcessed && (
             <>
               <button
                 disabled={isAdapting}
                 onClick={() => onAnalyze(site.path, displayName)}
-                className="w-8 h-8 flex items-center justify-center bg-purple-500/10 hover:bg-purple-500 text-purple-500 hover:text-white rounded-lg text-sm transition-all border border-purple-500/20 disabled:opacity-50"
+                className="w-8 h-8 flex items-center justify-center bg-purple-500/10 hover:bg-purple-500 text-purple-400 hover:text-white rounded-lg transition-all border border-purple-500/20"
               >
                 🔬
               </button>
               <button
                 disabled={isAdapting}
                 onClick={() => onAdapt(site.path, displayName)}
-                className="w-8 h-8 flex items-center justify-center bg-neon-cyan/10 hover:bg-neon-cyan text-neon-cyan hover:text-white rounded-lg text-sm transition-all border border-neon-cyan/20 disabled:opacity-50"
+                className="w-8 h-8 flex items-center justify-center bg-neon-cyan/10 hover:bg-neon-cyan text-neon-cyan hover:text-white rounded-lg transition-all border border-neon-cyan/20"
               >
                 🛠️
               </button>
@@ -103,21 +89,21 @@ const SiteCard = React.memo(
           )}
           <button
             onClick={() => onOpenFolder(site.path)}
-            className="w-8 h-8 flex items-center justify-center bg-white/5 hover:bg-white/20 rounded-lg text-sm transition-all"
+            className="w-8 h-8 flex items-center justify-center bg-white/5 hover:bg-white/20 rounded-lg transition-all"
           >
             📂
           </button>
           <button
             onClick={() => onDelete(site.path, displayName)}
-            className="w-8 h-8 flex items-center justify-center bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-lg text-sm transition-all"
+            className="w-8 h-8 flex items-center justify-center bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-lg transition-all"
           >
             🗑️
           </button>
         </div>
 
-        {/* Инфо о сайте */}
-        <div className="flex items-center gap-4 mb-6 relative">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-white/5 to-white/10 flex items-center justify-center text-2xl border border-white/5 group-hover:border-neon-cyan/30 shrink-0">
+        {/* Info */}
+        <div className="flex items-center gap-4 mb-6">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-white/5 to-white/10 flex items-center justify-center text-2xl border border-white/5 group-hover:border-neon-cyan/30 shrink-0 transition-colors">
             {site.icon ? (
               <img src={site.icon} alt="" className="w-8 h-8 object-contain" />
             ) : (
@@ -125,68 +111,76 @@ const SiteCard = React.memo(
             )}
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="font-bold text-white text-lg truncate">
+            <h3 className="font-bold text-white text-lg truncate group-hover:text-neon-cyan transition-colors">
               {displayName}
             </h3>
-            <p className="text-[10px] text-gray-500 font-mono truncate opacity-60">
+            <p className="text-[10px] text-gray-500 font-mono truncate opacity-60 italic">
               {site.path}
             </p>
           </div>
         </div>
 
-        {/* Прогресс адаптации */}
+        {/* Progress Bar for Adaptation */}
         {isAdapting && (
-          <div className="mb-6">
-            <div className="flex justify-between text-[10px] font-mono text-neon-cyan mb-1.5">
-              <span>
-                {isAnalyzing ? t("analyzing").toUpperCase() : "ADAPTING..."}
+          <div className="mb-6 animate-fade-in">
+            <div className="flex justify-between text-[10px] font-mono text-neon-cyan mb-2 tracking-tighter">
+              <span className="uppercase">
+                {isAnalyzing
+                  ? "Analyzing Structure..."
+                  : "Recalibrating Paths..."}
               </span>
               <span>{percent}%</span>
             </div>
-            <div className="h-2 w-full bg-black/40 rounded-full overflow-hidden border border-white/5">
+            <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden border border-white/5">
               <div
-                className="h-full bg-neon-cyan transition-all duration-500"
+                className="h-full bg-neon-cyan shadow-[0_0_10px_#00ffff] transition-all duration-500"
                 style={{ width: `${percent}%` }}
               ></div>
             </div>
           </div>
         )}
 
-        {/* ГЛАВНАЯ КНОПКА (Запустить / Закрыть) */}
-        <div className="mt-auto">
-          <button
-            disabled={isAdapting}
-            onClick={() => (isRunning ? onStop() : onLaunch(site.path))}
-            className={`w-full py-3 rounded-2xl text-sm font-bold transition-all border flex items-center justify-center gap-2 ${
-              isRunning
-                ? "bg-red-500/10 border-red-500/30 text-red-500 hover:bg-red-500 hover:text-white"
-                : isProcessed
-                  ? "bg-neon-green/10 border-neon-green/30 text-neon-green hover:bg-neon-green hover:text-white"
-                  : "bg-neon-cyan/10 border-neon-cyan/20 text-neon-cyan hover:bg-neon-cyan hover:text-white"
-            }`}
-          >
-            <span>{isRunning ? "⏹️" : isAdapting ? "⏳" : "🚀"}</span>
-            {isAdapting
-              ? t("processing")
-              : isRunning
-                ? t("close")
-                : t("launch")}
-          </button>
-        </div>
+        {/* Action Button */}
+        <button
+          disabled={isAdapting}
+          onClick={() => (isRunning ? onStop() : onLaunch(site.path))}
+          className={`w-full py-3 rounded-2xl text-sm font-black transition-all border flex items-center justify-center gap-3 ${
+            isRunning
+              ? "bg-red-500/10 border-red-500/30 text-red-500 hover:bg-red-500 hover:text-white shadow-lg shadow-red-500/20"
+              : isProcessed
+                ? "bg-green-500/10 border-green-500/30 text-green-400 hover:bg-green-500 hover:text-white shadow-lg shadow-green-500/20"
+                : "bg-neon-cyan/10 border-neon-cyan/20 text-neon-cyan hover:bg-neon-cyan hover:text-white shadow-lg shadow-neon-cyan/20"
+          }`}
+        >
+          {isRunning ? (
+            <>
+              <span className="animate-pulse">⏹️</span> {t("close")}
+            </>
+          ) : isAdapting ? (
+            <>
+              <span className="animate-spin">⏳</span> {t("processing")}
+            </>
+          ) : (
+            <>
+              <span className="group-hover:translate-x-1 transition-transform">
+                🚀
+              </span>{" "}
+              {t("launch")}
+            </>
+          )}
+        </button>
 
-        {/* Статусы-бейджи */}
-        {isRunning ? (
-          <div className="absolute -top-1 -left-1 px-3 py-1 rounded-full bg-red-500 text-white font-black text-[9px] uppercase z-10 flex items-center gap-1 shadow-lg">
-            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
+        {/* Status Badges */}
+        {isRunning && (
+          <div className="absolute -top-2 -left-2 px-3 py-1 rounded-lg bg-red-500 text-white font-black text-[9px] uppercase shadow-[0_0_15px_rgba(239,68,68,0.5)] flex items-center gap-1.5 z-10 border border-white/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>{" "}
             {t("status_running")}
           </div>
-        ) : (
-          isProcessed &&
-          !isAdapting && (
-            <div className="absolute -top-1 -left-1 px-3 py-1 rounded-full bg-neon-green text-black font-black text-[9px] uppercase z-10 shadow-lg">
-              {t("status_adapted")}
-            </div>
-          )
+        )}
+        {isProcessed && !isAdapting && !isRunning && (
+          <div className="absolute -top-2 -left-2 px-3 py-1 rounded-lg bg-neon-cyan text-black font-black text-[9px] uppercase shadow-[0_0_15px_rgba(0,255,255,0.3)] z-10 border border-white/20">
+            {t("status_adapted")}
+          </div>
         )}
       </div>
     );

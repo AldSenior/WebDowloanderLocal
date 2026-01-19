@@ -1091,52 +1091,42 @@ func NewJob(root string, cfg Config) (*Job, error) {
 }
 
 func (j *Job) Run() {
-	if j.Events != nil {
-		defer close(j.Events)
-	}
-	signal.Notify(j.shutdownChan, os.Interrupt, syscall.SIGTERM)
+    if j.Events != nil {
+        defer close(j.Events)
+    }
 
-	// Обработчик завершения
-	defer func() {
-		j.wg.Wait()
-		j.sendLog("📭 All tasks completed, closing pending channel", false)
-		j.cancel()
+    signal.Notify(j.shutdownChan, os.Interrupt, syscall.SIGTERM)
 
-		if j.Events != nil {
-			j.Events <- "✅ Download completed successfully!"
-		}
+    // Запуск репортера прогресса
+    go j.progressReporter()
 
-		if err := j.saveState(); err != nil {
-			log.Printf("Error saving state: %v", err)
-		}
-		log.Println("✅ Download completed. All links rewritten for local viewing.")
-	}()
+    // Запуск воркеров
+    for i := 0; i < j.Config.Workers; i++ {
+        j.wg.Add(1)
+        go j.worker()
+    }
 
-	// ПЕРВЫМ запускаем репортер прогресса (для GUI)
-	go j.progressReporter()
+    // Запускаем горутину, которая закроет канал pending,
+    // когда ВСЕ активные задачи (включая рекурсивные) закончатся.
+    go func() {
+        j.activeWG.Wait()  // Ждем, пока счетчик станет 0
+        close(j.pending)   // Сигнализируем воркерам, что работы больше нет
+    }()
 
-	// Первичная очередь
-	normalized, _ := NormalizeURL(j.RootURL)
-	j.mu.Lock()
-	j.depths[normalized] = 0
-	j.visited[normalized] = true
-	j.mu.Unlock()
+    // Ждем, пока все воркеры завершат цикл (выйдут из range j.pending)
+    j.wg.Wait()
 
-	// Discover common files (404, robots, etc.)
-	j.discoverCommonFiles()
+    // Финальные действия после завершения
+    j.sendLog("📭 Все задачи выполнены, сохранение состояния...", false)
+    j.cancel()
 
-	j.activeWG.Add(1)
-	j.pending <- normalized
+    if j.Events != nil {
+        j.Events <- "✅ Загрузка успешно завершена!"
+    }
 
-	// Запуск воркеров
-	for i := 0; i < j.Config.Workers; i++ {
-		j.wg.Add(1)
-		go j.worker()
-	}
-
-	j.activeWG.Wait()
-	close(j.pending)
-	j.wg.Wait()
+    if err := j.saveState(); err != nil {
+        log.Printf("Ошибка сохранения стейта: %v", err)
+    }
 }
 
 func (j *Job) discoverCommonFiles() {
@@ -1144,39 +1134,51 @@ func (j *Job) discoverCommonFiles() {
 		"/404", "/404.html", "/robots.txt", "/sitemap.xml", "/favicon.ico",
 		"/apple-touch-icon.png", "/manifest.json",
 	}
+    parsed, _ := url.Parse(j.RootURL)
+    baseURL := parsed.Scheme + "://" + parsed.Host
 
-	parsed, err := url.Parse(j.RootURL)
-	if err != nil {
-		return
-	}
-	baseURL := parsed.Scheme + "://" + parsed.Host
+    for _, p := range commonPaths {
+        targetURL := baseURL + p
+        j.mu.Lock()
+        if _, exists := j.visited[targetURL]; !exists {
+            j.visited[targetURL] = true
+            j.depths[targetURL] = 0
+            j.mu.Unlock()
 
-	for _, p := range commonPaths {
-		targetURL := baseURL + p
-		j.mu.Lock()
-		if _, exists := j.depths[targetURL]; !exists {
-			j.depths[targetURL] = 0 // Treat as root level
-			j.mu.Unlock()
-			j.activeWG.Add(1)
-			select {
-			case j.pending <- targetURL:
-				j.sendLog(fmt.Sprintf("[Discovery] Queued common file: %s", p), false)
-			default:
-				j.activeWG.Done()
-			}
-		} else {
-			j.mu.Unlock()
-		}
-	}
+            j.activeWG.Add(1) // Добавляем задачу
+            select {
+            case j.pending <- targetURL:
+            default:
+                // Если канал полон и мы не можем отправить,
+                // нужно откатить счетчик, иначе программа никогда не завершится
+                j.activeWG.Done()
+            }
+        } else {
+            j.mu.Unlock()
+        }
+    }
 }
 
 func (j *Job) worker() {
-	defer j.wg.Done()
+    defer j.wg.Done() // Сообщает о завершении самой горутины воркера
 
-	for urlStr := range j.pending {
-		j.processURL(urlStr)
-		j.activeWG.Done()
-	}
+    for {
+        select {
+        case urlStr, ok := <-j.pending:
+            if !ok {
+                return // Канал закрыт, выходим
+            }
+
+            // Обрабатываем URL
+            j.processURL(urlStr)
+
+            // КРИТИЧЕСКИ ВАЖНО: Уменьшаем счетчик активных задач
+            j.activeWG.Done()
+
+        case <-j.ctx.Done():
+            return // Завершение по контексту
+        }
+    }
 }
 
 func (j *Job) processURL(urlStr string) {
@@ -1303,41 +1305,43 @@ func (j *Job) sortedHandlers() []ContentHandler {
 }
 
 func (j *Job) saveState() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+    j.mu.Lock()
+    defer j.mu.Unlock()
 
-	// Сливаем очередь в срез
-	var pendingURLs []string
-	for {
-		select {
-		case url := <-j.pending:
-			pendingURLs = append(pendingURLs, url)
-		default:
-			// Пересоздаем канал после слива
-			j.pending = make(chan string, 5000)
-			for _, url := range pendingURLs {
-				j.pending <- url
-			}
+    // Не пересоздаем канал! Просто собираем текущий снимок очереди.
+    // Читаем из канала всё, что там есть, и ТУТ ЖЕ возвращаем обратно.
+    var pendingURLs []string
+    currLen := len(j.pending)
+    for i := 0; i < currLen; i++ {
+        select {
+        case url := <-j.pending:
+            pendingURLs = append(pendingURLs, url)
+            j.pending <- url // Возвращаем назад для воркеров
+        default:
+            break
+        }
+    }
 
-			// Сохраняем состояние
-			state := JobState{
-				ID:          j.ID,
-				RootURL:     j.RootURL,
-				PendingURLs: pendingURLs,
-				DepthMap:    j.depths,
-				Stats:       j.stats,
-				Config:      j.Config,
-			}
+    state := JobState{
+        ID:          j.ID,
+        RootURL:     j.RootURL,
+        PendingURLs: pendingURLs,
+        DepthMap:    j.depths, // Внимание: если карта огромная, это займет память
+        Stats:       j.stats,
+        Config:      j.Config,
+    }
 
-			// Используем Marshal вместо MarshalIndent для экономии памяти и места
-			data, err := json.Marshal(state)
-			if err != nil {
-				return err
-			}
+    data, err := json.Marshal(state)
+    if err != nil {
+        return err
+    }
 
-			return ioutil.WriteFile(j.stateFile, data, 0644)
-		}
-	}
+    // Используем временный файл для безопасной записи (чтобы не убить стейт при краше)
+    tmpFile := j.stateFile + ".tmp"
+    if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+        return err
+    }
+    return os.Rename(tmpFile, j.stateFile)
 }
 
 func (j *Job) loadState() error {
