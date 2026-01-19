@@ -62,9 +62,22 @@ const DownloadView = () => {
       setProgress({ current: 0, total: 0 });
     });
 
+    // Handle tab switching
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // Refresh progress when tab becomes visible
+        EventsOn("download:progress", (data: any) => {
+          setProgress({ current: data.current, total: data.total });
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       clProgress();
       clDone();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [setIsDownloading]);
 

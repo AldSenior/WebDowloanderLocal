@@ -92,15 +92,34 @@ func (a *App) DownloadSite(urlStr string, outputDir string) string {
 			return
 		}
 
-		// Передаем логи в GUI
-		go func() {
-			for msg := range job.Events {
-				runtime.EventsEmit(a.ctx, "download:log", msg)
-			}
-		}()
+		    // Передаем логи в GUI
+		    go func() {
+		        for msg := range job.Events {
+		            runtime.EventsEmit(a.ctx, "download:log", msg)
+		        }
+		    }()
 
-		job.Run()
-		runtime.EventsEmit(a.ctx, "download:log", "[System] Download phase complete.")
+		    // Передаем прогресс в GUI
+		    go func() {
+		        ticker := time.NewTicker(500 * time.Millisecond)
+		        defer ticker.Stop()
+
+		        for {
+		            select {
+		            case <-a.ctx.Done():
+		                return
+		            case <-ticker.C:
+		                stats := job.GetStats()
+		                runtime.EventsEmit(a.ctx, "download:progress", map[string]interface{}{
+		                    "current": stats.TotalFiles,
+		                    "total":   stats.TotalFiles,
+		                })
+		            }
+		        }
+		    }()
+
+		    job.Run()
+		    runtime.EventsEmit(a.ctx, "download:log", "[System] Download phase complete.")
 	}()
 
 	return "Download started"

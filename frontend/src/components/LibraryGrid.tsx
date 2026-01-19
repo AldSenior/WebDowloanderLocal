@@ -345,7 +345,21 @@ const LibraryGrid = () => {
     },
     [t, showModal, fetchSites],
   );
+  const [adaptationProgress, setAdaptationProgress] = useState<
+    Record<string, any>
+  >({});
 
+  useEffect(() => {
+    const unlisten = EventsOn("adaptation:progress", (data: any) => {
+      // Нормализуем путь от бэкенда, чтобы он совпал с тем, что в объекте site
+      const normPath = data.path.replace(/\\/g, "/").toLowerCase();
+      setAdaptationProgress((prev) => ({
+        ...prev,
+        [normPath]: { current: data.current, total: data.total },
+      }));
+    });
+    return () => unlisten();
+  }, []);
   return (
     <div className="h-full flex flex-col pt-2">
       <div className="flex items-center justify-between mb-8">
@@ -363,10 +377,9 @@ const LibraryGrid = () => {
           <div className="w-10 h-10 border-2 border-t-neon-cyan rounded-full animate-spin"></div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 overflow-y-auto pb-20">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 p-10 gap-8 overflow-y-auto">
           {sites.map((site, i) => {
             const sitePath = normalizePath(site.path);
-            // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Проверяем, начинается ли путь сервера с пути сайта или наоборот
             const isRunning =
               normalizedServingPath !== "" &&
               (normalizedServingPath.includes(sitePath) ||

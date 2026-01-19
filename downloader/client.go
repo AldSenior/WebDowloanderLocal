@@ -1005,6 +1005,12 @@ type Job struct {
 	Events       chan string
 }
 
+func (j *Job) GetStats() JobStats {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.stats
+}
+
 func (j *Job) progressReporter() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -1078,6 +1084,16 @@ func NewJob(root string, cfg Config) (*Job, error) {
 	if err := job.loadState(); err == nil {
 		log.Printf("✅ Resumed job %s from state file", id)
 	} else {
+		// Оценка общего количества файлов перед началом загрузки
+		totalFiles, err := estimateTotalFiles(root, cfg)
+		if err != nil {
+			log.Printf("⚠️ Could not estimate total files: %v", err)
+			job.stats.TotalFiles = -1 // Указывает на невозможность оценки
+		} else {
+			job.stats.TotalFiles = int64(totalFiles)
+			log.Printf("📊 Estimated %d files to download", totalFiles)
+		}
+
 		// Начинаем с корневого URL
 		normalized, _ := NormalizeURL(root)
 		job.activeWG.Add(1) // Добавляем в WaitGroup для rootURL
@@ -1088,6 +1104,138 @@ func NewJob(root string, cfg Config) (*Job, error) {
 	}
 
 	return job, nil
+}
+
+// estimateTotalFiles выполняет предварительный обход сайта для оценки общего количества файлов
+func estimateTotalFiles(root string, cfg Config) (int, error) {
+	parsed, err := url.Parse(root)
+	if err != nil {
+		return 0, err
+	}
+
+	filter := &DefaultURLFilter{
+		domain:   parsed.Host,
+		basePath: parsed.Path,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Создаем временный job для оценки
+	tempJob := &Job{
+		RootURL:  root,
+		Config:   cfg,
+		Filter:   filter,
+		visited:  make(map[string]bool),
+		depths:   make(map[string]int),
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+
+	// Канал для сбора URL
+	urlChan := make(chan string, 1000)
+	go func() {
+		defer close(urlChan)
+		tempJob.preScan(root, urlChan, 0, cfg.MaxDepth)
+	}()
+
+	totalFiles := 0
+	for range urlChan {
+		totalFiles++
+	}
+
+	return totalFiles, nil
+}
+
+// preScan выполняет рекурсивный обход сайта для сбора URL
+func (j *Job) preScan(urlStr string, urlChan chan<- string, currentDepth int, maxDepth int) {
+	if currentDepth > maxDepth {
+		return
+	}
+
+	normalized, err := NormalizeURL(urlStr)
+	if err != nil || !j.Filter.ShouldDownload(normalized) {
+		return
+	}
+
+	j.mu.Lock()
+	if j.visited[normalized] {
+		j.mu.Unlock()
+		return
+	}
+	j.visited[normalized] = true
+	j.mu.Unlock()
+
+	urlChan <- normalized
+
+	resp, err := http.Head(normalized)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/html") {
+		// Parse HTML to find links
+		links, err := extractLinksFromHTML(normalized)
+		if err != nil {
+			return
+		}
+
+		for _, link := range links {
+			j.preScan(link, urlChan, currentDepth+1, maxDepth)
+		}
+	}
+}
+
+// extractLinksFromHTML извлекает ссылки из HTML-страницы
+func extractLinksFromHTML(urlStr string) ([]string, error) {
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	doc, err := html.Parse(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var links []string
+	var f func(*html.Node)
+	f = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			for _, a := range n.Attr {
+				if a.Key == "href" {
+					links = append(links, a.Val)
+				}
+			}
+		}
+	}
+	forEachNode(doc, f, nil)
+
+	return links, nil
+}
+
+// forEachNode рекурсивно обходит все узлы HTML-дерева
+func forEachNode(n *html.Node, pre, post func(n *html.Node)) {
+	if pre != nil {
+		pre(n)
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		forEachNode(c, pre, post)
+	}
+	if post != nil {
+		post(n)
+	}
 }
 
 func (j *Job) Run() {
